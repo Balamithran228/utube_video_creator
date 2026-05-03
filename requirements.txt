@@ -1,2 +1,12 @@
 pydub>=0.25.1
 Pillow>=9.0.0
+numpy>=1.22.0
+
+# Optional — only needed if you use the VAD pipeline (simple_video_creator.py --vad).
+# Uncomment to install:
+# silero-vad>=5.0
+# torch>=2.0
+
+# Optional — only needed for the legacy Whisper keyword-marker pipeline
+# (simple_video_creator.py --keywords). Not recommended; left for reference.
+# faster-whisper>=1.0

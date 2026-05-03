@@ -6,6 +6,8 @@ Turn a folder of images + a single voice recording into a YouTube-ready 1080p MP
 
 ## Quick start
 
+> **On a Mac?** Follow [SETUP_MAC.md](SETUP_MAC.md) to install Python, FFmpeg, and the dependencies. Two paths covered: `uv` (recommended) and traditional `pip`.
+
 ```bash
 python launcher.py                  # ← start here: front page with all four tools
 ```
