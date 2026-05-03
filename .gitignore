@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Generated video outputs (regenerate from inputs anytime)
+video_tone_*.mp4
+video_vad_*.mp4
+video_kw_*.mp4
+video_2*.mp4
+merged_*.mp4
+_tonebase_*.mp4
+
+# Test artifacts
+_test_*.mp3
+_test_*.mp4
+_test_*.wav
+_transcript_dump.txt
+
+# Pipeline temp dirs (created by tempfile.mkdtemp prefixes used in the code)
+svc_*/
+svc_tone_*/
+svc_vad_*/
+svc_kw_*/
+svc_render_*/
+vm_thumbs_*/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

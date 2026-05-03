@@ -1,0 +1,1125 @@
+#!/usr/bin/env python3
+"""
+Tone Video Creator (Approach 2)
+================================
+
+Splits audio into segments using 1020 Hz tone markers, then pairs each
+segment with a photo and renders a 1080p MP4.
+
+Two recording modes
+-------------------
+MODE 1 — `--mode 1` (alias of `--mode pre-tone`)
+    Audio STARTS with a tone. Each tone marks the start of a segment.
+    Pattern: [tone] [seg1] [tone] [seg2] ... [tone] [segN]
+    N tones -> N segments. Anything before the first tone is discarded.
+
+MODE 2 — `--mode 2` (alias of `--mode separator`)
+    Audio starts and ends with TALKING (no tones at the edges).
+    Tones are dividers between adjacent segments.
+    Pattern: [seg1] [tone] [seg2] [tone] ... [tone] [segN]
+    N tones -> N+1 segments. For 33 panels you'd play 32 tones.
+
+Audio cleanup applied to BOTH modes
+-----------------------------------
+- 1020 Hz tone is fully muted (segment edges are shrunk inward by 80 ms
+  so no beep ever bleeds in).
+- Internal silences longer than 400 ms are removed. When one voice ends,
+  the next voice starts — no audible dead air, no audible beeps.
+
+Optional text overlays (off by default — add the flags to turn them on)
+---------------------------------------------------------------------
+  --scroll       Right-to-left scrolling ticker at the bottom (loops continuously)
+  --side         Static text on the right edge, vertically centred
+  --text "..."   Text to display (default: "Varabm VoiceOver")
+
+Run
+---
+GUI (default — when launched with no args):
+    python tone_video_creator.py
+
+CLI:
+    python tone_video_creator.py --audio your_recording.mp3 --mode 2
+    python tone_video_creator.py --audio your_recording.mp3 --mode 2 --scroll --side
+    python tone_video_creator.py --audio your_recording.mp3 --mode 1 --threshold 0.30
+
+Output is written to the workspace as `video_tone_<timestamp>.mp4`.
+"""
+
+import os
+import re
+import sys
+import shutil
+import subprocess
+import tempfile
+import threading
+import queue
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+# Reuse helpers from the main script (ffmpeg discovery, render+concat, etc.)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from simple_video_creator import (  # noqa: E402
+    AudioSegment,
+    IMG_EXTS,
+    VIDEO_W,
+    VIDEO_H,
+    FPS,
+    _render_and_concat,
+    _safe_console,
+    compress_internal_silences,
+    configure_pydub,
+    find_ffmpeg,
+)
+from pydub.silence import detect_nonsilent
+
+WORKSPACE = HERE
+DEFAULT_IMAGES = WORKSPACE / "section-20260502-235344"
+
+# Optional asset folders. Each holds at most one file picked up automatically.
+START_IMAGE_DIR = WORKSPACE / "start_image"
+START_VIDEO_DIR = WORKSPACE / "start_video"
+END_IMAGE_DIR = WORKSPACE / "end_image"
+
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+
+
+def first_file_in(folder, exts):
+    """Return the first file in `folder` whose extension is in `exts`, else None."""
+    if not Path(folder).is_dir():
+        return None
+    matches = sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in exts)
+    return str(matches[0]) if matches else None
+
+
+def reencode_to_target(input_video, output_path, ffmpeg, log=print,
+                       width=VIDEO_W, height=VIDEO_H, fps=FPS):
+    """Re-encode `input_video` so it matches the rest of the pipeline's clips
+    (target W x H, H.264 yuv420p `fps` fps, AAC 192k 48kHz). Returns True on success."""
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"setsar=1"
+    )
+    cmd = [
+        ffmpeg, "-y", "-loglevel", "error",
+        "-i", str(input_video),
+        "-vf", vf,
+        "-r", str(fps),
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-pix_fmt", "yuv420p",
+        # Map only first audio stream if present, generate silent audio if missing
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        # Retry with silent audio added (in case the input video had no audio track)
+        log(f"  reencode hit error, retrying with silent audio: {res.stderr.strip()[:120]}")
+        silent_cmd = [
+            ffmpeg, "-y", "-loglevel", "error",
+            "-i", str(input_video),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-vf", vf,
+            "-r", str(fps),
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+        res2 = subprocess.run(silent_cmd, capture_output=True, text=True)
+        if res2.returncode != 0:
+            log(f"  reencode failed: {res2.stderr.strip()[:200]}")
+            return False
+    return True
+
+
+# ---------- Output resolution + voice-boost ----------
+RESOLUTION_PRESETS = {
+    "360p":  (640,  360),
+    "480p":  (854,  480),
+    "720p":  (1280, 720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "2160p": (3840, 2160),
+}
+DEFAULT_RESOLUTION_KEY = "1080p"
+
+# Slider 0..100 maps linearly to 0..VOICE_BOOST_MAX_DB.
+# +12 dB ≈ 4× amplitude (~2× perceived loudness). Above this risks clipping.
+VOICE_BOOST_MAX_DB = 12.0
+
+
+def boost_pct_to_db(pct):
+    pct = max(0, min(100, int(pct)))
+    return (pct / 100.0) * VOICE_BOOST_MAX_DB
+
+
+# ---------- Tone detector defaults ----------
+TONE_FREQ_HZ = 1020
+TONE_SAMPLE_RATE = 8000        # downsample for fast FFT (Nyquist 4 kHz, plenty for 1020 Hz)
+TONE_WINDOW_MS = 50
+TONE_HOP_MS = 10
+TONE_RATIO_THRESHOLD = 0.30    # tone-bin energy / total energy
+TONE_MIN_DURATION_MS = 150     # ignore brief spikes shorter than this
+TONE_MERGE_GAP_MS = 500        # merge tones whose gap is below this (smooths flickers)
+
+# ---------- Cleanup behaviour (applies to BOTH modes) ----------
+# Inward shrink at every tone-adjacent segment edge — guarantees the 1020 Hz
+# tone never bleeds into the segment audio (so the listener never hears a beep).
+TONE_AVOID_MS = 80
+# Maximum silence we keep inside a segment. Anything longer is removed so that
+# "when my voice ends, the next voice starts" — no dead air, no audible gaps.
+INTRA_SEGMENT_MAX_SILENCE_MS = 400
+# Energy threshold for what counts as silence (in dB).
+INTRA_SEGMENT_SILENCE_THRESH_DB = -40
+# Padding to keep around non-silent ranges so word edges aren't clipped.
+INTRA_SEGMENT_PAD_MS = 50
+
+
+def detect_tones(audio_path,
+                 freq_hz=TONE_FREQ_HZ,
+                 sample_rate=TONE_SAMPLE_RATE,
+                 window_ms=TONE_WINDOW_MS,
+                 hop_ms=TONE_HOP_MS,
+                 threshold=TONE_RATIO_THRESHOLD,
+                 min_duration_ms=TONE_MIN_DURATION_MS,
+                 merge_gap_ms=TONE_MERGE_GAP_MS,
+                 log=print):
+    """Find every range (in ms) where a `freq_hz` tone is present.
+
+    Algorithm:
+      1. Resample audio to `sample_rate` mono float
+      2. Sliding-window FFT (`window_ms`/`hop_ms`)
+      3. Per frame, compute energy in the bins around `freq_hz`
+         divided by total spectral energy → 'ratio'
+      4. Mark frames where ratio > threshold
+      5. Group contiguous marked frames into runs, drop runs < min_duration_ms
+      6. Merge runs separated by < merge_gap_ms (smooths brief drops mid-tone)
+    """
+    seg = (AudioSegment.from_file(audio_path)
+           .set_frame_rate(sample_rate)
+           .set_channels(1)
+           .set_sample_width(2))
+    samples = np.array(seg.get_array_of_samples(), dtype=np.float32) / 32768.0
+    duration_ms = len(samples) * 1000 // sample_rate
+    log(f"      audio loaded: {duration_ms/1000:.2f}s @ {sample_rate} Hz mono")
+
+    win = int(sample_rate * window_ms / 1000)
+    hop = int(sample_rate * hop_ms / 1000)
+    n_frames = max(0, (len(samples) - win) // hop + 1)
+    if n_frames == 0:
+        return []
+
+    starts = np.arange(n_frames) * hop
+    frames = np.stack([samples[s:s + win] for s in starts]) * np.hanning(win)
+    spectra = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+    freqs = np.fft.rfftfreq(win, 1.0 / sample_rate)
+    target_bin = int(np.argmin(np.abs(freqs - freq_hz)))
+
+    target_e = np.sum(spectra[:, max(0, target_bin - 1):target_bin + 2], axis=1)
+    total_e = np.sum(spectra, axis=1) + 1e-9
+    ratios = target_e / total_e
+    above = ratios > threshold
+
+    # Group contiguous frames
+    runs_ms = []
+    i = 0
+    while i < n_frames:
+        if above[i]:
+            j = i
+            while j < n_frames and above[j]:
+                j += 1
+            dur_ms = (j - i) * hop_ms
+            if dur_ms >= min_duration_ms:
+                runs_ms.append([i * hop_ms, j * hop_ms])
+            i = j
+        else:
+            i += 1
+
+    # Merge runs that are close together (the same tone briefly dropping below threshold)
+    merged = []
+    for start, end in runs_ms:
+        if merged and start - merged[-1][1] <= merge_gap_ms:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    log(f"      detected {len(merged)} tone events at {freq_hz} Hz (threshold {threshold})")
+    return [(s, e) for s, e in merged]
+
+
+def split_by_tones(audio, tones_ms, mode="pre-tone", avoid_ms=TONE_AVOID_MS, log=print):
+    """Convert tone time-ranges into segment time-ranges, with inward shrink to avoid tone bleed.
+
+    Modes (also accepted as '1' / '2'):
+      pre-tone / 1  — Audio starts WITH a tone. Each tone marks the START of a segment.
+                       Segment K = [end_of_tone_K, start_of_tone_{K+1}]
+                       Trailing segment runs to end of audio.
+                       N tones -> N segments.
+
+      separator / 2 — Audio starts and ends WITHOUT a tone (talk on both edges).
+                       Tones are DIVIDERS between segments.
+                       Segment 1 = [audio_start, start_of_tone_1]
+                       Segment K = [end_of_tone_{K-1}, start_of_tone_K]
+                       Final segment = [end_of_tone_last, audio_end]
+                       N tones -> N+1 segments.
+
+      post-tone     — Mirror of pre-tone (audio ENDS with a tone).
+                       Useful if the user played a tone after each segment finished.
+
+    `avoid_ms` is shrunk inward from each TONE-adjacent edge, so a small detection
+    error around the tone start/end never makes the beep audible.
+    """
+    if not tones_ms:
+        return []
+    total_ms = len(audio)
+    raw = []  # (start_ms, end_ms, left_is_tone, right_is_tone)
+    if mode in ("pre-tone", "1"):
+        for i, (s, e) in enumerate(tones_ms):
+            seg_start = e
+            seg_end = tones_ms[i + 1][0] if i + 1 < len(tones_ms) else total_ms
+            left_is_tone = True
+            right_is_tone = (i + 1 < len(tones_ms))
+            raw.append((seg_start, seg_end, left_is_tone, right_is_tone))
+    elif mode == "post-tone":
+        prev_end = 0
+        for idx, (s, e) in enumerate(tones_ms):
+            left_is_tone = (idx > 0)
+            right_is_tone = True
+            raw.append((prev_end, s, left_is_tone, right_is_tone))
+            prev_end = e
+    elif mode in ("separator", "2"):
+        # First chunk: audio start (no tone) to first tone start (tone)
+        raw.append((0, tones_ms[0][0], False, True))
+        # Middle chunks: tone-end to next tone-start (tone on both sides)
+        for i in range(len(tones_ms) - 1):
+            raw.append((tones_ms[i][1], tones_ms[i + 1][0], True, True))
+        # Final chunk: last tone end (tone) to audio end (no tone)
+        raw.append((tones_ms[-1][1], total_ms, True, False))
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    # Apply inward shrink at every tone-adjacent edge; leave audio-edge boundaries alone.
+    segs = []
+    for s, e, left_is_tone, right_is_tone in raw:
+        if left_is_tone:
+            s += avoid_ms
+        if right_is_tone:
+            e -= avoid_ms
+        if e - s >= 200:
+            segs.append((s, e))
+    log(f"      built {len(segs)} segments in '{mode}' mode (inward shrink {avoid_ms}ms at each tone edge)")
+    return segs
+
+
+def tighten_segment(seg_audio,
+                    max_silence_ms=INTRA_SEGMENT_MAX_SILENCE_MS,
+                    silence_thresh_db=INTRA_SEGMENT_SILENCE_THRESH_DB,
+                    pad_ms=INTRA_SEGMENT_PAD_MS):
+    """Remove all silences longer than `max_silence_ms` (including leading and trailing).
+    Returns a (usually shorter) AudioSegment with no audible dead air."""
+    if len(seg_audio) == 0:
+        return seg_audio
+    nonsilent = detect_nonsilent(
+        seg_audio,
+        min_silence_len=max_silence_ms,
+        silence_thresh=silence_thresh_db,
+    )
+    if not nonsilent:
+        # Whole segment was silent — keep a short tail so the photo doesn't flash by
+        return seg_audio[:200]
+    out = AudioSegment.empty()
+    for s, e in nonsilent:
+        s = max(0, s - pad_ms)
+        e = min(len(seg_audio), e + pad_ms)
+        out += seg_audio[s:e]
+    return out
+
+
+DEFAULT_OVERLAY_TEXT = "Varabm VoiceOver"
+SCROLL_SPEED_PX_PER_S = 90       # how fast the bottom ticker moves; lower = slower
+SCROLL_FONT_SIZE = 44
+SIDE_FONT_SIZE = 32
+
+
+def find_overlay_font():
+    """Return the path to a usable bold font, or None."""
+    candidates = [
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\segoeuib.ttf",
+        r"C:\Windows\Fonts\calibrib.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _ffmpeg_escape_path(path):
+    """Escape a Windows path for use inside an ffmpeg filter graph."""
+    # Forward slashes are safer than backslashes inside filter expressions.
+    p = path.replace("\\", "/")
+    # Colons are filter-option separators; escape them.
+    p = p.replace(":", r"\:")
+    return p
+
+
+def _ffmpeg_escape_text(text):
+    """Escape text for the drawtext `text=` option."""
+    # Backslash first, then colons / single-quotes
+    return (text.replace("\\", "\\\\")
+                .replace(":", r"\:")
+                .replace("'", r"\'"))
+
+
+def burn_in_text(input_path, output_path, ffmpeg,
+                 scroll_text=None, side_text=None,
+                 scroll_speed=SCROLL_SPEED_PX_PER_S,
+                 height=VIDEO_H,
+                 log=print):
+    """Re-encode `input_path` into `output_path` with optional text overlays.
+      - scroll_text: if set, a right-to-left looping ticker is drawn at the bottom
+      - side_text:   if set, static text is drawn on the right edge, vertically centered
+      - height:      output video height; font sizes scale proportionally so overlays
+                     stay readable at 360p as well as 2160p
+    Returns True on success."""
+    if not scroll_text and not side_text:
+        return False  # nothing to burn
+
+    font_path = find_overlay_font()
+    if not font_path:
+        log("WARNING: no system font found — skipping overlay")
+        return False
+    font_esc = _ffmpeg_escape_path(font_path)
+
+    # Scale font sizes proportional to height (designed against 1080p baseline)
+    scale = max(0.25, height / 1080.0)
+    scroll_fs = max(12, int(round(SCROLL_FONT_SIZE * scale)))
+    side_fs = max(10, int(round(SIDE_FONT_SIZE * scale)))
+    bottom_pad = max(10, int(round(50 * scale)))
+
+    filters = []
+    if scroll_text:
+        # Right-to-left scrolling ticker with translucent black bar behind text
+        # x = w - mod(t * speed, w + tw)  → starts at x=w, decreases to x=-tw, then loops
+        text_esc = _ffmpeg_escape_text(scroll_text)
+        filters.append(
+            f"drawtext="
+            f"fontfile='{font_esc}':"
+            f"text='{text_esc}':"
+            f"fontsize={scroll_fs}:fontcolor=white:"
+            f"borderw=3:bordercolor=black:"
+            f"box=1:boxcolor=black@0.45:boxborderw=14:"
+            f"y=h-{scroll_fs + bottom_pad}:"
+            f"x='w-mod(t*{scroll_speed}\\,w+tw)'"
+        )
+    if side_text:
+        text_esc = _ffmpeg_escape_text(side_text)
+        filters.append(
+            f"drawtext="
+            f"fontfile='{font_esc}':"
+            f"text='{text_esc}':"
+            f"fontsize={side_fs}:fontcolor=white:"
+            f"borderw=2:bordercolor=black:"
+            f"box=1:boxcolor=black@0.35:boxborderw=10:"
+            f"x=w-tw-30:y=(h-th)/2"
+        )
+
+    vf = ",".join(filters)
+    cmd = [
+        ffmpeg, "-y", "-loglevel", "error",
+        "-i", str(input_path),
+        "-vf", vf,
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-tune", "stillimage",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        log(f"ERROR: text overlay failed: {res.stderr.strip()[:300]}")
+        return False
+    return True
+
+
+def run_tone_pipeline(images_dir,
+                      audio_path,
+                      freq_hz=TONE_FREQ_HZ,
+                      threshold=TONE_RATIO_THRESHOLD,
+                      mode="pre-tone",
+                      scroll_text=None,
+                      side_text=None,
+                      start_image_path=None,
+                      end_image_path=None,
+                      start_video_path=None,
+                      volume_boost_pct=0,
+                      resolution=None,
+                      log=print):
+    _safe_console()
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        log("ERROR: FFmpeg not found.")
+        return None
+    configure_pydub(ffmpeg)
+
+    # Output resolution — default to module 1080p if caller didn't pick one.
+    out_w, out_h = resolution if resolution else (VIDEO_W, VIDEO_H)
+    log(f"  output resolution: {out_w}x{out_h}")
+
+    images_dir = Path(images_dir)
+    audio_path = Path(audio_path)
+    main_images = sorted(
+        [str(images_dir / f) for f in os.listdir(images_dir) if Path(f).suffix.lower() in IMG_EXTS]
+    )
+    if not main_images:
+        log("ERROR: no images.")
+        return None
+
+    # Build the effective image list: [start_image] + main + [end_image] (if those are enabled).
+    images = list(main_images)
+    if start_image_path:
+        if not Path(start_image_path).is_file():
+            log(f"ERROR: start image not found: {start_image_path}")
+            return None
+        images.insert(0, str(start_image_path))
+        log(f"  start image: {Path(start_image_path).name} -> segment 1")
+    if end_image_path:
+        if not Path(end_image_path).is_file():
+            log(f"ERROR: end image not found: {end_image_path}")
+            return None
+        images.append(str(end_image_path))
+        log(f"  end image: {Path(end_image_path).name} -> last segment")
+
+    log(f"[1/4] Loading audio: {audio_path.name}")
+    audio = AudioSegment.from_file(str(audio_path))
+    total_ms = len(audio)
+    log(f"      length = {total_ms/1000:.2f}s")
+
+    if volume_boost_pct and volume_boost_pct > 0:
+        gain_db = boost_pct_to_db(volume_boost_pct)
+        peak_before = audio.max_dBFS
+        audio = audio + gain_db
+        peak_after = peak_before + gain_db
+        warn = " — WILL CLIP, expect distortion" if peak_after > 0 else ""
+        log(f"      voice boost: +{volume_boost_pct}% -> +{gain_db:.1f} dB "
+            f"(peak {peak_before:.1f} -> {peak_after:.1f} dBFS{warn})")
+
+    log(f"[2/4] Detecting {freq_hz} Hz tone markers")
+    tones = detect_tones(str(audio_path), freq_hz=freq_hz, threshold=threshold, log=log)
+    if not tones:
+        log("ERROR: no tones detected — try lowering --threshold.")
+        return None
+
+    log(f"[3/4] Building segments ({mode}) and pairing with photos")
+    seg_ranges = split_by_tones(audio, tones, mode=mode, log=log)
+    if not seg_ranges:
+        log("ERROR: no usable segments built from tones.")
+        return None
+
+    n_imgs = len(images)
+    n_segs = len(seg_ranges)
+    n_pairs = min(n_imgs, n_segs)
+    if n_imgs != n_segs:
+        if n_segs > n_imgs:
+            log(f"      more segments ({n_segs}) than images ({n_imgs}) — last image holds for the trailing {n_segs - n_imgs + 1} segments")
+        else:
+            log(f"      more images ({n_imgs}) than segments ({n_segs}) — using only first {n_pairs} images")
+
+    tmp = Path(tempfile.mkdtemp(prefix="svc_tone_"))
+    seg_dir = tmp / "segments"
+    seg_dir.mkdir()
+
+    segments = []
+    for i in range(n_pairs):
+        if i == n_pairs - 1 and n_segs > n_imgs:
+            # Last image absorbs all trailing segments. Tighten each before joining
+            # so internal silences vanish even at the seam.
+            merged = AudioSegment.empty()
+            for j in range(i, n_segs):
+                s_ms, e_ms = seg_ranges[j]
+                piece = tighten_segment(audio[s_ms:e_ms])
+                merged += piece
+            seg_path = seg_dir / f"seg_{i:03d}.wav"
+            merged.export(str(seg_path), format="wav")
+            segments.append({"file": str(seg_path), "duration_ms": len(merged)})
+            raw_total = sum((seg_ranges[j][1] - seg_ranges[j][0]) for j in range(i, n_segs))
+            log(f"  segment {i+1}: merged {n_segs - i} raw {raw_total/1000:.2f}s -> tight {len(merged)/1000:.2f}s")
+        else:
+            s_ms, e_ms = seg_ranges[i]
+            raw = audio[s_ms:e_ms]
+            piece = tighten_segment(raw)
+            seg_path = seg_dir / f"seg_{i:03d}.wav"
+            piece.export(str(seg_path), format="wav")
+            segments.append({"file": str(seg_path), "duration_ms": len(piece)})
+            log(f"  segment {i+1}: raw {len(raw)/1000:.2f}s -> tight {len(piece)/1000:.2f}s")
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_name = f"video_tone_{timestamp}.mp4"
+    out_path = WORKSPACE / out_name
+
+    has_overlay = bool(scroll_text or side_text)
+    base_path = (WORKSPACE / f"_tonebase_{timestamp}.mp4") if has_overlay else out_path
+
+    # If a start video was provided, re-encode it to match our target format and
+    # prepend it to the concat list so it plays first.
+    prepend_clips = []
+    intro_clip_path = None
+    if start_video_path:
+        if not Path(start_video_path).is_file():
+            log(f"ERROR: start video not found: {start_video_path}")
+            shutil.rmtree(tmp, ignore_errors=True)
+            return None
+        intro_clip_path = tmp / "_intro.mp4"
+        log(f"  start video: re-encoding {Path(start_video_path).name} to match target format")
+        if reencode_to_target(start_video_path, intro_clip_path, ffmpeg, log=log,
+                              width=out_w, height=out_h):
+            prepend_clips.append(str(intro_clip_path))
+            log(f"  start video ready: prepended to final concat")
+        else:
+            log("  WARNING: start video re-encode failed; continuing without it")
+
+    log(f"[4/{5 if has_overlay else 4}] Rendering {n_pairs} clips and joining…")
+    ok = _render_and_concat(
+        ffmpeg, segments, images[:n_pairs], str(base_path), log=log,
+        prepend_clips=prepend_clips,
+        width=out_w, height=out_h,
+    )
+    shutil.rmtree(tmp, ignore_errors=True)
+    if not ok:
+        if has_overlay and base_path.exists():
+            base_path.unlink()
+        return None
+
+    if has_overlay:
+        log(f"[5/5] Burning in text overlays (scroll={bool(scroll_text)}, side={bool(side_text)})")
+        ok = burn_in_text(
+            str(base_path), str(out_path), ffmpeg,
+            scroll_text=scroll_text, side_text=side_text, height=out_h, log=log,
+        )
+        base_path.unlink(missing_ok=True)
+        if not ok:
+            log("ERROR: text overlay step failed; no output produced.")
+            return None
+
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    log(f"DONE: {out_path}  ({size_mb:.1f} MB)")
+    return out_path
+
+
+class ToneVideoApp:
+    """tkinter GUI wrapping run_tone_pipeline. Same options as the CLI flags,
+    rendered as widgets the user can tick or fill in."""
+
+    STAGE_PROGRESS = {
+        "[1/4]": 8,   "[1/5]": 6,
+        "[2/4]": 22,  "[2/5]": 18,
+        "[3/4]": 38,  "[3/5]": 30,
+        "[4/4]": 95,  "[4/5]": 85,
+        "[5/5]": 95,
+    }
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Tone Video Creator (Approach 2)")
+        self.root.geometry("820x720")
+        self.root.minsize(780, 660)
+
+        # Pipeline inputs
+        self.images_dir = tk.StringVar(value=str(DEFAULT_IMAGES) if DEFAULT_IMAGES.is_dir() else "")
+        self.audio_file = tk.StringVar()
+
+        # Mode + tone tuning
+        self.mode_var = tk.IntVar(value=2)
+        self.freq_var = tk.IntVar(value=TONE_FREQ_HZ)
+        self.threshold_var = tk.DoubleVar(value=TONE_RATIO_THRESHOLD)
+
+        # Text overlays
+        self.scroll_enabled = tk.BooleanVar(value=False)
+        self.side_enabled = tk.BooleanVar(value=False)
+        self.overlay_text = tk.StringVar(value=DEFAULT_OVERLAY_TEXT)
+
+        # Optional extras: start image, end image, start video. Each is a
+        # checkbox + path; auto-detected from workspace folders if present.
+        self.start_image_enabled = tk.BooleanVar(value=False)
+        self.end_image_enabled = tk.BooleanVar(value=False)
+        self.start_video_enabled = tk.BooleanVar(value=False)
+        self.start_image_path = tk.StringVar(value=first_file_in(START_IMAGE_DIR, IMG_EXTS) or "")
+        self.end_image_path = tk.StringVar(value=first_file_in(END_IMAGE_DIR, IMG_EXTS) or "")
+        self.start_video_path = tk.StringVar(value=first_file_in(START_VIDEO_DIR, VIDEO_EXTS) or "")
+
+        # Audio + output settings
+        self.volume_boost_var = tk.IntVar(value=0)
+        self.resolution_var = tk.StringVar(value=DEFAULT_RESOLUTION_KEY)
+
+        # Run state
+        self.is_running = False
+        self.log_queue = queue.Queue()
+        self.ffmpeg = find_ffmpeg()
+        configure_pydub(self.ffmpeg)
+
+        self._render_clip_re = re.compile(r"\[(\d+)/(\d+)\]\s+panel-")
+
+        self._build_ui()
+        self._poll_log()
+
+        if self.ffmpeg:
+            self._log(f"FFmpeg: {self.ffmpeg}")
+        else:
+            self._log("WARNING: FFmpeg not found on PATH. Convert will fail.")
+
+        # Auto-pick most recent audio in workspace if none chosen yet
+        candidates = sorted(
+            [p for p in WORKSPACE.iterdir()
+             if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg"}],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if candidates:
+            self.audio_file.set(str(candidates[0]))
+            self._log(f"Audio auto-selected: {candidates[0].name}")
+
+    # ---------- UI ----------
+    def _build_ui(self):
+        outer = ttk.Frame(self.root, padding=12)
+        outer.pack(fill="both", expand=True)
+
+        # 1. Files
+        src = ttk.LabelFrame(outer, text="1. Pick your files", padding=10)
+        src.pack(fill="x", pady=(0, 8))
+        src.columnconfigure(1, weight=1)
+        ttk.Label(src, text="Images folder:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+        ttk.Entry(src, textvariable=self.images_dir).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Button(src, text="Browse…", command=self._browse_images).grid(row=0, column=2, padx=4, pady=4)
+        ttk.Label(src, text="Voice file:").grid(row=1, column=0, sticky="w", padx=4, pady=4)
+        ttk.Entry(src, textvariable=self.audio_file).grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Button(src, text="Browse…", command=self._browse_audio).grid(row=1, column=2, padx=4, pady=4)
+
+        # 2. Mode
+        mode = ttk.LabelFrame(outer, text="2. Recording mode", padding=10)
+        mode.pack(fill="x", pady=(0, 8))
+        ttk.Radiobutton(
+            mode,
+            text="Mode 1 — Audio starts WITH a tone   (N tones → N segments)",
+            variable=self.mode_var, value=1,
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            mode,
+            text="Mode 2 — Audio bookended with TALKING, tones in between   (N tones → N+1 segments)",
+            variable=self.mode_var, value=2,
+        ).pack(anchor="w")
+
+        # 3. Tone tuning (collapsed-feeling, single row)
+        tune = ttk.LabelFrame(outer, text="3. Tone tuning (defaults are good)", padding=10)
+        tune.pack(fill="x", pady=(0, 8))
+        ttk.Label(tune, text="Frequency (Hz):").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Spinbox(tune, from_=200, to=4000, increment=10, textvariable=self.freq_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
+        ttk.Label(tune, text="Threshold (0–1):").grid(row=0, column=2, sticky="w", padx=(0, 4))
+        ttk.Spinbox(tune, from_=0.05, to=0.95, increment=0.05, textvariable=self.threshold_var, width=8, format="%.2f").grid(row=0, column=3, sticky="w")
+
+        # 4. Audio + output settings (voice boost slider, resolution dropdown)
+        audio_out = ttk.LabelFrame(outer, text="4. Audio & output", padding=10)
+        audio_out.pack(fill="x", pady=(0, 8))
+        audio_out.columnconfigure(1, weight=1)
+
+        ttk.Label(audio_out, text="Voice boost:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        boost_scale = ttk.Scale(
+            audio_out, from_=0, to=100, orient="horizontal",
+            variable=self.volume_boost_var,
+            command=lambda _v: self._update_boost_label(),
+        )
+        boost_scale.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self.boost_label = ttk.Label(audio_out, text="0% (no change)", width=20, anchor="w")
+        self.boost_label.grid(row=0, column=2, sticky="w")
+
+        ttk.Label(audio_out, text="Output quality:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        quality_combo = ttk.Combobox(
+            audio_out, textvariable=self.resolution_var, state="readonly",
+            values=[
+                f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items()
+            ],
+            width=22,
+        )
+        # Default selection — match DEFAULT_RESOLUTION_KEY
+        default_label = next(
+            (f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items() if k == DEFAULT_RESOLUTION_KEY),
+            "1080p (1920×1080)",
+        )
+        self.resolution_var.set(default_label)
+        quality_combo.grid(row=1, column=1, columnspan=2, sticky="w", pady=(8, 0))
+
+        # 5. Text overlays
+        overlay = ttk.LabelFrame(outer, text="5. Text overlays (tick to include)", padding=10)
+        overlay.pack(fill="x", pady=(0, 8))
+        overlay.columnconfigure(1, weight=1)
+        ttk.Checkbutton(
+            overlay,
+            text="✓ Scrolling ticker at the bottom (right → left, looping)",
+            variable=self.scroll_enabled,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(
+            overlay,
+            text="✓ Static text on the right side (vertically centred)",
+            variable=self.side_enabled,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(overlay, text="Text:").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
+        ttk.Entry(overlay, textvariable=self.overlay_text).grid(row=2, column=1, sticky="ew", pady=(4, 0))
+
+        # 6. Extras — start image, end image, start video
+        extras = ttk.LabelFrame(outer, text="6. Extras (tick to include)", padding=10)
+        extras.pack(fill="x", pady=(0, 8))
+        extras.columnconfigure(2, weight=1)
+
+        def add_extra_row(row, label, var_enabled, var_path, browse_cmd):
+            ttk.Checkbutton(extras, text=label, variable=var_enabled).grid(
+                row=row, column=0, sticky="w", padx=(0, 8), pady=2,
+            )
+            ttk.Entry(extras, textvariable=var_path).grid(
+                row=row, column=1, columnspan=2, sticky="ew", padx=(0, 4), pady=2,
+            )
+            ttk.Button(extras, text="Browse…", command=browse_cmd).grid(
+                row=row, column=3, padx=(4, 0), pady=2,
+            )
+
+        add_extra_row(
+            0,
+            "Start video (plays first as intro)",
+            self.start_video_enabled, self.start_video_path,
+            lambda: self._browse_into(self.start_video_path, "Pick start video", VIDEO_EXTS, START_VIDEO_DIR),
+        )
+        add_extra_row(
+            1,
+            "Start image (maps to segment 1)",
+            self.start_image_enabled, self.start_image_path,
+            lambda: self._browse_into(self.start_image_path, "Pick start image", IMG_EXTS, START_IMAGE_DIR),
+        )
+        add_extra_row(
+            2,
+            "End image (maps to last trailing segment)",
+            self.end_image_enabled, self.end_image_path,
+            lambda: self._browse_into(self.end_image_path, "Pick end image", IMG_EXTS, END_IMAGE_DIR),
+        )
+
+        # 6. Convert + progress
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill="x", pady=(0, 8))
+        self.convert_btn = ttk.Button(btn_row, text="▶  Convert", command=self._start, width=18)
+        self.convert_btn.pack(side="left")
+        self.open_btn = ttk.Button(btn_row, text="📂 Open workspace", command=self._open_workspace)
+        self.open_btn.pack(side="right")
+
+        prog = ttk.LabelFrame(outer, text="Progress", padding=10)
+        prog.pack(fill="x", pady=(0, 8))
+        prog.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
+        self.percent_label.grid(row=0, column=1, padx=(8, 0))
+        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        # 6. Log
+        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
+        log_frame.pack(fill="both", expand=True)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, wrap="word", font=("Consolas", 9))
+        self.log_text.pack(fill="both", expand=True)
+
+    # ---------- Helpers ----------
+    def _browse_images(self):
+        d = filedialog.askdirectory(title="Select images folder", initialdir=str(WORKSPACE))
+        if d:
+            self.images_dir.set(d)
+
+    def _browse_into(self, target_var, title, exts, default_dir):
+        types = [(",".join(exts), " ".join(f"*{e}" for e in sorted(exts))), ("All files", "*.*")]
+        f = filedialog.askopenfilename(
+            title=title,
+            initialdir=str(default_dir if default_dir.is_dir() else WORKSPACE),
+            filetypes=types,
+        )
+        if f:
+            target_var.set(f)
+
+    def _browse_audio(self):
+        f = filedialog.askopenfilename(
+            title="Select voice file",
+            initialdir=str(WORKSPACE),
+            filetypes=[("Audio", "*.mp3 *.wav *.m4a *.flac *.ogg"), ("All files", "*.*")],
+        )
+        if f:
+            self.audio_file.set(f)
+
+    def _open_workspace(self):
+        if sys.platform == "win32":
+            os.startfile(str(WORKSPACE))
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(WORKSPACE)])
+        else:
+            subprocess.run(["xdg-open", str(WORKSPACE)])
+
+    def _log(self, message):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_queue.put(f"[{ts}] {message}")
+
+    def _poll_log(self):
+        try:
+            while True:
+                msg = self.log_queue.get_nowait()
+                self.log_text.insert("end", msg + "\n")
+                self.log_text.see("end")
+                # Update progress bar based on stage tags in the message
+                self._maybe_update_progress(msg)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll_log)
+
+    def _maybe_update_progress(self, msg):
+        # Big stage transitions
+        for tag, pct in self.STAGE_PROGRESS.items():
+            if tag in msg:
+                self._set_progress(pct, msg.split("] ", 1)[-1].strip())
+                return
+        # Per-clip render lines like "[12/33] panel-012.png -> 5.43s ok"
+        m = self._render_clip_re.search(msg)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            base = self.STAGE_PROGRESS["[4/5]"] if (self.scroll_enabled.get() or self.side_enabled.get()) else self.STAGE_PROGRESS["[4/4]"]
+            prev = self.STAGE_PROGRESS["[3/5]"] if (self.scroll_enabled.get() or self.side_enabled.get()) else self.STAGE_PROGRESS["[3/4]"]
+            span = max(1, base - prev)
+            pct = prev + int(cur / total * span)
+            self._set_progress(pct, f"Rendering clip {cur}/{total}")
+
+    def _set_progress(self, pct, status=None):
+        pct = max(0, min(100, int(pct)))
+        self.progress["value"] = pct
+        self.percent_label.config(text=f"{pct}%")
+        if status is not None:
+            self.status_label.config(text=status)
+        self.root.update_idletasks()
+
+    def _update_boost_label(self):
+        pct = int(self.volume_boost_var.get())
+        if pct == 0:
+            self.boost_label.config(text="0% (no change)")
+        else:
+            gain_db = boost_pct_to_db(pct)
+            self.boost_label.config(text=f"{pct}% (+{gain_db:.1f} dB)")
+
+    def _selected_resolution(self):
+        """Return (width, height) tuple for the chosen quality dropdown entry."""
+        label = self.resolution_var.get()
+        # The label looks like "720p (1280×720)"; strip to the leading key.
+        key = label.split()[0] if label else DEFAULT_RESOLUTION_KEY
+        return RESOLUTION_PRESETS.get(key, RESOLUTION_PRESETS[DEFAULT_RESOLUTION_KEY])
+
+    # ---------- Pipeline ----------
+    def _start(self):
+        if self.is_running:
+            return
+        if not self.images_dir.get() or not Path(self.images_dir.get()).is_dir():
+            messagebox.showerror("Missing", "Pick an images folder.")
+            return
+        if not self.audio_file.get() or not Path(self.audio_file.get()).is_file():
+            messagebox.showerror("Missing", "Pick a voice file.")
+            return
+        if not self.ffmpeg:
+            self.ffmpeg = find_ffmpeg()
+            configure_pydub(self.ffmpeg)
+            if not self.ffmpeg:
+                messagebox.showerror("FFmpeg missing", "FFmpeg is required.")
+                return
+
+        self.is_running = True
+        self.convert_btn.config(state="disabled")
+        self.log_text.delete("1.0", "end")
+        self._set_progress(0, "Starting…")
+
+        scroll_text = self.overlay_text.get() if self.scroll_enabled.get() else None
+        side_text = self.overlay_text.get() if self.side_enabled.get() else None
+        mode_str = "pre-tone" if self.mode_var.get() == 1 else "separator"
+
+        start_image = self.start_image_path.get() if self.start_image_enabled.get() else None
+        end_image = self.end_image_path.get() if self.end_image_enabled.get() else None
+        start_video = self.start_video_path.get() if self.start_video_enabled.get() else None
+
+        volume_boost = int(self.volume_boost_var.get())
+        resolution = self._selected_resolution()
+
+        threading.Thread(
+            target=self._run_pipeline_safe,
+            kwargs=dict(
+                images=self.images_dir.get(),
+                audio=self.audio_file.get(),
+                mode=mode_str,
+                freq=self.freq_var.get(),
+                threshold=self.threshold_var.get(),
+                scroll_text=scroll_text,
+                side_text=side_text,
+                start_image=start_image,
+                end_image=end_image,
+                start_video=start_video,
+                volume_boost=volume_boost,
+                resolution=resolution,
+            ),
+            daemon=True,
+        ).start()
+
+    def _run_pipeline_safe(self, images, audio, mode, freq, threshold,
+                           scroll_text, side_text,
+                           start_image=None, end_image=None, start_video=None,
+                           volume_boost=0, resolution=None):
+        try:
+            result = run_tone_pipeline(
+                images, audio,
+                freq_hz=freq, threshold=threshold, mode=mode,
+                scroll_text=scroll_text, side_text=side_text,
+                start_image_path=start_image,
+                end_image_path=end_image,
+                start_video_path=start_video,
+                volume_boost_pct=volume_boost,
+                resolution=resolution,
+                log=self._log,
+            )
+            self.root.after(0, lambda: self._finish(result, resolution))
+        except Exception as e:
+            import traceback
+            self._log(f"ERROR: {e}")
+            self._log(traceback.format_exc())
+            self.root.after(0, lambda: self._finish(None, resolution))
+
+    def _finish(self, result, resolution=None):
+        self.is_running = False
+        self.convert_btn.config(state="normal")
+        if result:
+            w, h = resolution if resolution else (VIDEO_W, VIDEO_H)
+            self._set_progress(100, f"Done → {Path(result).name}")
+            messagebox.showinfo(
+                "Video ready",
+                f"Saved to:\n{result}\n\nResolution: {w}×{h}",
+            )
+        else:
+            self._set_progress(0, "Failed — see log")
+
+
+def launch_gui():
+    root = tk.Tk()
+    try:
+        style = ttk.Style()
+        if "vista" in style.theme_names():
+            style.theme_use("vista")
+    except Exception:
+        pass
+    ToneVideoApp(root)
+    # Force window to the front on first launch (otherwise it can hide behind the IDE)
+    root.lift()
+    root.attributes("-topmost", True)
+    root.after(500, lambda: root.attributes("-topmost", False))
+    try:
+        root.focus_force()
+    except Exception:
+        pass
+    root.mainloop()
+
+
+def main():
+    args = sys.argv[1:]
+    # No args at all → launch the GUI
+    if not args:
+        launch_gui()
+        return
+
+    images = str(DEFAULT_IMAGES)
+    audio = None
+    freq = TONE_FREQ_HZ
+    threshold = TONE_RATIO_THRESHOLD
+    mode = "pre-tone"
+
+    overlay_text = DEFAULT_OVERLAY_TEXT
+    enable_scroll = False
+    enable_side = False
+    start_image_path = None
+    end_image_path = None
+    start_video_path = None
+    volume_boost = 0
+    resolution = None  # None -> falls back to 1080p in run_tone_pipeline
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--images":
+            images = args[i + 1]; i += 2
+        elif a == "--audio":
+            audio = args[i + 1]; i += 2
+        elif a == "--freq":
+            freq = int(args[i + 1]); i += 2
+        elif a == "--threshold":
+            threshold = float(args[i + 1]); i += 2
+        elif a == "--mode":
+            raw = args[i + 1].lower()
+            mode = {"1": "pre-tone", "2": "separator"}.get(raw, raw)
+            i += 2
+        elif a == "--scroll":
+            enable_scroll = True; i += 1
+        elif a == "--side":
+            enable_side = True; i += 1
+        elif a == "--text":
+            overlay_text = args[i + 1]; i += 2
+        elif a == "--start-image":
+            start_image_path = args[i + 1]; i += 2
+        elif a == "--end-image":
+            end_image_path = args[i + 1]; i += 2
+        elif a == "--start-video":
+            start_video_path = args[i + 1]; i += 2
+        elif a == "--volume-boost":
+            volume_boost = int(args[i + 1]); i += 2
+        elif a == "--resolution":
+            key = args[i + 1].lower()
+            if key not in RESOLUTION_PRESETS:
+                print(f"ERROR: --resolution must be one of {list(RESOLUTION_PRESETS)}")
+                sys.exit(1)
+            resolution = RESOLUTION_PRESETS[key]
+            i += 2
+        else:
+            print(f"WARNING: unknown argument '{a}' — ignored")
+            i += 1
+
+    scroll_text = overlay_text if enable_scroll else None
+    side_text = overlay_text if enable_side else None
+
+    if audio is None:
+        # Auto-pick the most recently modified mp3/wav in workspace as a convenience
+        candidates = sorted(
+            [p for p in WORKSPACE.iterdir() if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg"}],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            print("ERROR: no audio found in workspace; pass --audio path/to/file.mp3")
+            sys.exit(1)
+        audio = str(candidates[0])
+        print(f"[auto] Using most recent audio: {Path(audio).name}")
+
+    result = run_tone_pipeline(
+        images, audio,
+        freq_hz=freq, threshold=threshold, mode=mode,
+        scroll_text=scroll_text, side_text=side_text,
+        start_image_path=start_image_path,
+        end_image_path=end_image_path,
+        start_video_path=start_video_path,
+        volume_boost_pct=volume_boost,
+        resolution=resolution,
+    )
+    sys.exit(0 if result else 1)
+
+
+if __name__ == "__main__":
+    main()
