@@ -453,6 +453,144 @@ def burn_in_text(input_path, output_path, ffmpeg,
     return True
 
 
+def _pair_image_list(pair):
+    """Return the canonical image list for a pair, accepting both the
+    new-style pair["images"] (list) and the legacy pair["image"] (scalar)
+    forms. Filters out empty / None entries."""
+    if "images" in pair:
+        return [i for i in (pair.get("images") or []) if i]
+    img = pair.get("image")
+    return [img] if img else []
+
+
+def _apply_preview_edits(preview_pairs, tmp_dir=None):
+    """Convert (possibly-mutated) preview_pairs into a (segments, images)
+    list pair that the renderer can consume.
+
+    The preview UI may:
+      - replace any image path within pair["images"] (Replace),
+      - drop all images for a pair (audio-only: previous image extends),
+      - set pair["audio"] = None (audio-only delete: orphan trailing
+        slot from the audio-shift — skipped entirely at render),
+      - drop entries from the list entirely (Delete entire segment),
+      - **append** images to a pair so audio time-shares equally (req 5).
+
+    For multi-image pairs (>= 2 images), the segment's audio is sliced
+    into N equal chunks at render time and each image is paired with
+    one chunk. This requires `tmp_dir` to be a writable directory; when
+    omitted, a multi-image pair returns an error rather than silently
+    producing a degenerate render.
+
+    Pairs whose image list is empty fall back to the most recent non-
+    empty primary image (chain-style). Pairs with audio=None are skipped.
+
+    Returns:
+      (segments, images, error)
+        segments: list of {"file", "duration_ms"} matching `images` 1:1
+                  — for multi-image pairs, ONE entry per image with the
+                  corresponding audio chunk written to `tmp_dir`.
+        images: list of resolved image paths (no Nones)
+        error:  human-readable error string if rendering can't proceed,
+                otherwise None.
+    """
+    if not preview_pairs:
+        return [], [], "preview produced no segments"
+
+    # Skip audio-less orphans up front so subsequent logic (image
+    # fallback chain, all-empty checks) only considers renderable pairs.
+    renderable_pairs = [p for p in preview_pairs if p.get("audio")]
+    if not renderable_pairs:
+        return [], [], "all audio segments were deleted — cannot render"
+
+    # Pick a fallback image to handle the case where leading pairs have
+    # no images (nothing earlier to chain back to). If the entire
+    # renderable set has no images at all, refuse.
+    fallback = None
+    for p in renderable_pairs:
+        imgs = _pair_image_list(p)
+        if imgs:
+            fallback = imgs[0]
+            break
+    if fallback is None:
+        return [], [], "all images were deleted — cannot render"
+
+    new_segments = []
+    new_images = []
+    prev_img = None
+    for pair in renderable_pairs:
+        images = _pair_image_list(pair)
+        n = len(images)
+
+        if n == 0:
+            # Audio-only pair: previous image extends over this segment.
+            img = prev_img or fallback
+            new_images.append(img)
+            new_segments.append({
+                "file": pair["audio"],
+                "duration_ms": pair["duration_ms"],
+            })
+            continue
+
+        if n == 1:
+            img = images[0]
+            new_images.append(img)
+            new_segments.append({
+                "file": pair["audio"],
+                "duration_ms": pair["duration_ms"],
+            })
+            prev_img = img
+            continue
+
+        # n >= 2: split audio into N chunks weighted by pair["weights"]
+        # (default = uniform, all 1.0 → equal split). Weights are
+        # normalised to sum=1 so a segment with weights [2, 1, 1] over
+        # 60s gives the first image 30s and the others 15s each.
+        if tmp_dir is None:
+            return [], [], (
+                "multi-image segments require tmp_dir for audio splitting "
+                "(internal error — pipeline must pass a writable dir)"
+            )
+        try:
+            seg = AudioSegment.from_file(pair["audio"])
+        except Exception as e:
+            return [], [], f"could not load audio for split: {e}"
+        total_ms = len(seg)
+        if total_ms < n:
+            return [], [], "audio too short to split across images"
+        weights = list(pair.get("weights") or [])
+        while len(weights) < n:
+            weights.append(1.0)
+        sum_w = sum(weights[:n]) if sum(weights[:n]) > 0 else 1.0
+        # Compute boundaries cumulatively so rounding errors stay within
+        # one chunk; the final chunk takes whatever's left.
+        boundaries = [0]
+        for i in range(n - 1):
+            cum = sum(weights[: i + 1])
+            boundaries.append(int(round(total_ms * cum / sum_w)))
+        boundaries.append(total_ms)
+        audio_stem = Path(pair["audio"]).stem
+        for i, img in enumerate(images):
+            start_ms = boundaries[i]
+            end_ms = boundaries[i + 1]
+            if end_ms - start_ms < 1:
+                # Degenerate weight produced an empty chunk — give it a
+                # symbolic 1ms so we don't crash. User can fix weights.
+                end_ms = start_ms + 1
+            chunk = seg[start_ms:end_ms]
+            chunk_path = Path(tmp_dir) / f"{audio_stem}.split{n}_{i}.wav"
+            chunk.export(str(chunk_path), format="wav")
+            new_images.append(img)
+            new_segments.append({
+                "file": str(chunk_path),
+                "duration_ms": int(end_ms - start_ms),
+            })
+        # The "primary image" for the next pair's None-fallback chain is
+        # the LAST image in this segment (it visually trails into next).
+        prev_img = images[-1]
+
+    return new_segments, new_images, None
+
+
 def run_tone_pipeline(images_dir,
                       audio_path,
                       freq_hz=TONE_FREQ_HZ,
@@ -465,6 +603,7 @@ def run_tone_pipeline(images_dir,
                       start_video_path=None,
                       volume_boost_pct=0,
                       resolution=None,
+                      pause_for_preview=None,
                       log=print):
     _safe_console()
     ffmpeg = find_ffmpeg()
@@ -564,6 +703,87 @@ def run_tone_pipeline(images_dir,
             segments.append({"file": str(seg_path), "duration_ms": len(piece)})
             log(f"  segment {i+1}: raw {len(raw)/1000:.2f}s -> tight {len(piece)/1000:.2f}s")
 
+    # Optional preview step — let the caller verify (image, audio) pairs
+    # before we commit to the (slow) MP4 render. The callback is blocking;
+    # returning False means the user cancelled and we should bail. The
+    # callback may also MUTATE pair["audio"]/pair["duration_ms"] and/or
+    # pair["images"] (replace / add another / swap / delete) before
+    # returning; we rebuild segments + images from preview_pairs after.
+    if pause_for_preview is not None:
+        preview_pairs = [
+            {
+                "images": [images[i]],
+                "audio": seg["file"],
+                "duration_ms": seg["duration_ms"],
+                "index": i + 1,
+            }
+            for i, seg in enumerate(segments)
+        ]
+        log("[3.5] Preview — verify each segment matches its image, then click Continue")
+        try:
+            proceed = pause_for_preview(preview_pairs)
+        except Exception as e:
+            log(f"  preview hook raised — proceeding with render: {e}")
+            proceed = True
+        if not proceed:
+            log("Cancelled by user before render — no output produced.")
+            shutil.rmtree(tmp, ignore_errors=True)
+            return "CANCELLED"
+
+        # Apply mutations from the preview UI. Mutations include: audio
+        # edits/replacements, image replacements, image-only deletions
+        # (None → prev image extends), full-segment deletions (entries
+        # removed), audio-only deletions (audio shifted up, trailing
+        # orphan slot), and multi-image expansion (per-segment audio
+        # time-shares equally across N images at render time — that's
+        # what tmp/ is for: the splitter writes chunk wavs there).
+        original_segs = list(segments)
+        original_imgs = list(images[:n_pairs])
+        new_segments, new_images, err = _apply_preview_edits(
+            preview_pairs, tmp_dir=str(seg_dir),
+        )
+        if err:
+            log(f"ERROR after preview: {err}")
+            shutil.rmtree(tmp, ignore_errors=True)
+            return None
+        # Diagnostics — log what changed so the run log is informative.
+        n_after = len(new_segments)
+        n_orig_pairs = len(original_segs)
+        n_preview_pairs = len(preview_pairs)
+        n_deleted = n_orig_pairs - n_preview_pairs  # full-segment removals
+        n_image_subs = sum(
+            1 for p in preview_pairs
+            if not (p.get("images") or [p.get("image")] if p.get("image") else [])
+        )
+        n_audio_orphans = sum(
+            1 for p in preview_pairs if p.get("audio") is None
+        )
+        n_multi_images = sum(
+            1 for p in preview_pairs
+            if (p.get("images") and len(p["images"]) >= 2)
+        )
+        # n_audio_edits = renderable pairs whose audio path no longer matches
+        # the original at the same position. After audio-shift the whole
+        # tail moves, so this count is upper-bound but informative.
+        n_audio_edits = 0
+        for i in range(min(n_preview_pairs, n_orig_pairs)):
+            preview_audio = preview_pairs[i].get("audio")
+            if preview_audio and preview_audio != original_segs[i]["file"]:
+                n_audio_edits += 1
+        if (n_deleted or n_audio_edits or n_image_subs or n_audio_orphans
+                or n_multi_images):
+            log(
+                f"  preview edits applied: "
+                f"{n_audio_edits} audio edit(s)/replace(s), "
+                f"{n_multi_images} multi-image segment(s) (audio split equally), "
+                f"{n_image_subs} image-only delete(s), "
+                f"{n_audio_orphans} audio-only delete(s) (skipped at render), "
+                f"{n_deleted} full segment delete(s)"
+            )
+        segments = new_segments
+        images = new_images
+        n_pairs = n_after
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     out_name = f"video_tone_{timestamp}.mp4"
     out_path = WORKSPACE / out_name
@@ -632,8 +852,15 @@ class ToneVideoApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Tone Video Creator (Approach 2)")
-        self.root.geometry("820x720")
-        self.root.minsize(780, 660)
+        # Default size adapts to the screen — full content needs ~960 px tall.
+        # Cap at 92% of screen height so the title bar / taskbar stay visible.
+        try:
+            screen_h = root.winfo_screenheight()
+        except Exception:
+            screen_h = 1080
+        default_h = min(980, max(720, int(screen_h * 0.92) - 40))
+        self.root.geometry(f"840x{default_h}")
+        self.root.minsize(780, 600)
 
         # Pipeline inputs
         self.images_dir = tk.StringVar(value=str(DEFAULT_IMAGES) if DEFAULT_IMAGES.is_dir() else "")
@@ -693,8 +920,76 @@ class ToneVideoApp:
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
 
+        # ───────── Bottom-anchored action area ─────────
+        # Convert / Progress / Log are packed FIRST with side="bottom" so
+        # they're always visible regardless of window height. Pack order
+        # with side="bottom" stacks bottom-up, so the visual order from
+        # top to bottom becomes: btn_row, prog, log_frame.
+
+        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
+        log_frame.pack(side="bottom", fill="x", expand=False)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap="word", font=("Consolas", 9))
+        self.log_text.pack(fill="both", expand=True)
+
+        prog = ttk.LabelFrame(outer, text="Progress", padding=10)
+        prog.pack(side="bottom", fill="x", pady=(0, 8))
+        prog.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
+        self.percent_label.grid(row=0, column=1, padx=(8, 0))
+        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(side="bottom", fill="x", pady=(0, 8))
+        self.convert_btn = ttk.Button(btn_row, text="▶  Convert", command=self._start, width=18)
+        self.convert_btn.pack(side="left")
+        self.open_btn = ttk.Button(btn_row, text="📂 Open workspace", command=self._open_workspace)
+        self.open_btn.pack(side="right")
+
+        # ───────── Scrollable form (sections 1–6) ─────────
+        # The form is taller than most windows can fit, so it lives
+        # inside a Canvas with a vertical scrollbar. The scrollbar shows
+        # when the form overflows; mouse wheel works while the cursor is
+        # over the form area.
+
+        form_wrap = ttk.Frame(outer)
+        form_wrap.pack(side="top", fill="both", expand=True)
+        form_wrap.rowconfigure(0, weight=1)
+        form_wrap.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(form_wrap, highlightthickness=0, borderwidth=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(form_wrap, orient="vertical", command=canvas.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=vsb.set)
+
+        form = ttk.Frame(canvas)
+        form_id = canvas.create_window((0, 0), window=form, anchor="nw")
+
+        def _on_form_resize(_e):
+            # Tell canvas the full scrollable region matches the form's reqsize
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        form.bind("<Configure>", _on_form_resize)
+
+        def _on_canvas_resize(e):
+            # Stretch inner form to canvas width so widgets fill horizontally
+            canvas.itemconfigure(form_id, width=e.width)
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Mouse wheel — bind globally only while pointer is over the canvas
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        def _bind_wheel(_e):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_wheel(_e):
+            canvas.unbind_all("<MouseWheel>")
+        canvas.bind("<Enter>", _bind_wheel)
+        canvas.bind("<Leave>", _unbind_wheel)
+
         # 1. Files
-        src = ttk.LabelFrame(outer, text="1. Pick your files", padding=10)
+        src = ttk.LabelFrame(form, text="1. Pick your files", padding=10)
         src.pack(fill="x", pady=(0, 8))
         src.columnconfigure(1, weight=1)
         ttk.Label(src, text="Images folder:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
@@ -705,7 +1000,7 @@ class ToneVideoApp:
         ttk.Button(src, text="Browse…", command=self._browse_audio).grid(row=1, column=2, padx=4, pady=4)
 
         # 2. Mode
-        mode = ttk.LabelFrame(outer, text="2. Recording mode", padding=10)
+        mode = ttk.LabelFrame(form, text="2. Recording mode", padding=10)
         mode.pack(fill="x", pady=(0, 8))
         ttk.Radiobutton(
             mode,
@@ -719,7 +1014,7 @@ class ToneVideoApp:
         ).pack(anchor="w")
 
         # 3. Tone tuning (collapsed-feeling, single row)
-        tune = ttk.LabelFrame(outer, text="3. Tone tuning (defaults are good)", padding=10)
+        tune = ttk.LabelFrame(form, text="3. Tone tuning (defaults are good)", padding=10)
         tune.pack(fill="x", pady=(0, 8))
         ttk.Label(tune, text="Frequency (Hz):").grid(row=0, column=0, sticky="w", padx=(0, 4))
         ttk.Spinbox(tune, from_=200, to=4000, increment=10, textvariable=self.freq_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
@@ -727,7 +1022,7 @@ class ToneVideoApp:
         ttk.Spinbox(tune, from_=0.05, to=0.95, increment=0.05, textvariable=self.threshold_var, width=8, format="%.2f").grid(row=0, column=3, sticky="w")
 
         # 4. Audio + output settings (voice boost slider, resolution dropdown)
-        audio_out = ttk.LabelFrame(outer, text="4. Audio & output", padding=10)
+        audio_out = ttk.LabelFrame(form, text="4. Audio & output", padding=10)
         audio_out.pack(fill="x", pady=(0, 8))
         audio_out.columnconfigure(1, weight=1)
 
@@ -758,7 +1053,7 @@ class ToneVideoApp:
         quality_combo.grid(row=1, column=1, columnspan=2, sticky="w", pady=(8, 0))
 
         # 5. Text overlays
-        overlay = ttk.LabelFrame(outer, text="5. Text overlays (tick to include)", padding=10)
+        overlay = ttk.LabelFrame(form, text="5. Text overlays (tick to include)", padding=10)
         overlay.pack(fill="x", pady=(0, 8))
         overlay.columnconfigure(1, weight=1)
         ttk.Checkbutton(
@@ -775,7 +1070,7 @@ class ToneVideoApp:
         ttk.Entry(overlay, textvariable=self.overlay_text).grid(row=2, column=1, sticky="ew", pady=(4, 0))
 
         # 6. Extras — start image, end image, start video
-        extras = ttk.LabelFrame(outer, text="6. Extras (tick to include)", padding=10)
+        extras = ttk.LabelFrame(form, text="6. Extras (tick to include)", padding=10)
         extras.pack(fill="x", pady=(0, 8))
         extras.columnconfigure(2, weight=1)
 
@@ -808,30 +1103,6 @@ class ToneVideoApp:
             self.end_image_enabled, self.end_image_path,
             lambda: self._browse_into(self.end_image_path, "Pick end image", IMG_EXTS, END_IMAGE_DIR),
         )
-
-        # 6. Convert + progress
-        btn_row = ttk.Frame(outer)
-        btn_row.pack(fill="x", pady=(0, 8))
-        self.convert_btn = ttk.Button(btn_row, text="▶  Convert", command=self._start, width=18)
-        self.convert_btn.pack(side="left")
-        self.open_btn = ttk.Button(btn_row, text="📂 Open workspace", command=self._open_workspace)
-        self.open_btn.pack(side="right")
-
-        prog = ttk.LabelFrame(outer, text="Progress", padding=10)
-        prog.pack(fill="x", pady=(0, 8))
-        prog.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
-        self.percent_label.grid(row=0, column=1, padx=(8, 0))
-        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
-        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-
-        # 6. Log
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
-        log_frame.pack(fill="both", expand=True)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, wrap="word", font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
 
     # ---------- Helpers ----------
     def _browse_images(self):
@@ -954,6 +1225,35 @@ class ToneVideoApp:
         volume_boost = int(self.volume_boost_var.get())
         resolution = self._selected_resolution()
 
+        # Build the preview hook: invoked by the worker thread between
+        # segmentation and rendering. show_preview_blocking schedules the
+        # UI on the main thread and blocks until the user decides.
+        from segment_preview import show_preview_blocking
+
+        # Surface the optional Start/End images as quick replacement targets
+        # in the per-segment image kebab — even when the user didn't include
+        # them in the rendered chain, they're still useful as fillers.
+        preview_defaults = []
+        if self.start_image_path.get() and Path(self.start_image_path.get()).is_file():
+            preview_defaults.append({
+                "label": "Front (start) image",
+                "path": self.start_image_path.get(),
+            })
+        if self.end_image_path.get() and Path(self.end_image_path.get()).is_file():
+            preview_defaults.append({
+                "label": "Back (end) image",
+                "path": self.end_image_path.get(),
+            })
+
+        preview_images_dir = self.images_dir.get() or None
+
+        def pause_for_preview(pairs):
+            return show_preview_blocking(
+                self.root, pairs, theme_name="dark",
+                defaults=preview_defaults,
+                images_dir=preview_images_dir,
+            )
+
         threading.Thread(
             target=self._run_pipeline_safe,
             kwargs=dict(
@@ -969,6 +1269,7 @@ class ToneVideoApp:
                 start_video=start_video,
                 volume_boost=volume_boost,
                 resolution=resolution,
+                pause_for_preview=pause_for_preview,
             ),
             daemon=True,
         ).start()
@@ -976,7 +1277,8 @@ class ToneVideoApp:
     def _run_pipeline_safe(self, images, audio, mode, freq, threshold,
                            scroll_text, side_text,
                            start_image=None, end_image=None, start_video=None,
-                           volume_boost=0, resolution=None):
+                           volume_boost=0, resolution=None,
+                           pause_for_preview=None):
         try:
             result = run_tone_pipeline(
                 images, audio,
@@ -987,6 +1289,7 @@ class ToneVideoApp:
                 start_video_path=start_video,
                 volume_boost_pct=volume_boost,
                 resolution=resolution,
+                pause_for_preview=pause_for_preview,
                 log=self._log,
             )
             self.root.after(0, lambda: self._finish(result, resolution))
@@ -999,7 +1302,9 @@ class ToneVideoApp:
     def _finish(self, result, resolution=None):
         self.is_running = False
         self.convert_btn.config(state="normal")
-        if result:
+        if result == "CANCELLED":
+            self._set_progress(0, "Cancelled — no video produced")
+        elif result:
             w, h = resolution if resolution else (VIDEO_W, VIDEO_H)
             self._set_progress(100, f"Done → {Path(result).name}")
             messagebox.showinfo(
