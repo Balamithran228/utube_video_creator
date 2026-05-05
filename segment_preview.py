@@ -389,22 +389,27 @@ def _add_wm_buttons(bar: "ctk.CTkFrame", window, theme: dict,
 
 # ─────────────────────────── Styled popup menu ───────────────────────────
 
-class StyledPopupMenu(ctk.CTkToplevel):
-    """Modern, CTk-themed replacement for tk.Menu.
+class StyledPopupMenu(tk.Toplevel):
+    """Modern CTk-themed popup menu.
 
-    Pops up at screen coords (x, y) with rounded corners, themed buttons,
-    hover effects, and disabled-state styling that matches the rest of
-    the toolkit. Auto-closes on Escape, click outside (FocusOut), or
-    after a command runs.
+    Built on tk.Toplevel (not CTkToplevel) to avoid CTkToplevel's
+    internal after() delays which can prevent the window from appearing
+    when the caller already has a CTkToplevel grab active.
+
+    Uses grab_set_global() so the popup works correctly even when a
+    parent window (e.g. SegmentDetailModal) holds an active local grab.
+    The previous grab owner is restored when the menu closes.
+
+    Closes on: Escape, click outside the popup bounds, or after a
+    command button is activated.
 
     Each item is a dict:
       {"kind": "command",   "label": str, "command": callable,
-                            "state": "normal"|"disabled" (default "normal"),
-                            "accent": bool (default False — emphasises label)}
+                            "state": "normal"|"disabled",
+                            "accent": bool — highlights as primary CTA}
       {"kind": "separator"}
       {"kind": "header",    "label": str}  # non-clickable section title
-
-    Submenus aren't supported — flatten the menu structure instead."""
+    """
 
     BUTTON_HEIGHT = 34
 
@@ -413,29 +418,33 @@ class StyledPopupMenu(ctk.CTkToplevel):
         self.theme = theme
         self._closed = False
 
-        # Strip OS chrome so the popup feels like a real menu, not a window.
+        # Remember who owned the grab before us so we can restore it on close
         try:
-            self.overrideredirect(True)
+            self._prev_grab = self.grab_current()
         except Exception:
-            self.title("")
+            self._prev_grab = None
+
+        # Strip window decorations for a true popup look
+        self.overrideredirect(True)
         try:
             self.attributes("-topmost", True)
         except Exception:
             pass
-        self.configure(fg_color=theme["bg"])
+        self.configure(bg=theme["bg"])
 
-        # Inner card with subtle border + rounded corners
+        # Themed card (CTkFrame as root widget inside the bare Toplevel)
         card = ctk.CTkFrame(
             self, fg_color=theme["panel2"], corner_radius=12,
             border_width=1, border_color=theme["stroke"],
         )
-        card.pack(fill="both", expand=True, padx=4, pady=4)
+        card.pack(fill="both", expand=True, padx=3, pady=3)
 
         for item in items:
             kind = item.get("kind", "command")
             if kind == "separator":
-                ctk.CTkFrame(card, fg_color=theme["stroke"], height=1,
-                             corner_radius=0).pack(fill="x", padx=10, pady=4)
+                ctk.CTkFrame(
+                    card, fg_color=theme["stroke"], height=1, corner_radius=0,
+                ).pack(fill="x", padx=10, pady=4)
                 continue
             if kind == "header":
                 ctk.CTkLabel(
@@ -451,11 +460,12 @@ class StyledPopupMenu(ctk.CTkToplevel):
             disabled = state == "disabled"
             accent = bool(item.get("accent"))
             text_color = (
-                theme["muted"] if disabled
-                else (theme["accent"] if accent else theme["text"])
+                theme["muted"] if disabled else
+                (theme["accent"] if accent else theme["text"])
             )
-            hover_color = theme["panel"] if disabled else (
-                theme["accent"] if accent else theme["accent2"]
+            hover_color = (
+                theme["panel"] if disabled else
+                (theme["accent"] if accent else theme["accent2"])
             )
             btn = ctk.CTkButton(
                 card,
@@ -472,17 +482,16 @@ class StyledPopupMenu(ctk.CTkToplevel):
                 btn.configure(state="disabled")
             btn.pack(fill="x", padx=6, pady=1)
 
-        # Position — clamp to screen
+        # Measure, position, clamp to screen
+        self.update_idletasks()
         try:
-            self.update_idletasks()
-            req_w = max(min_width, card.winfo_reqwidth() + 8)
-            req_h = card.winfo_reqheight() + 8
+            req_w = max(min_width, card.winfo_reqwidth() + 6)
+            req_h = card.winfo_reqheight() + 6
         except Exception:
             req_w, req_h = min_width, 320
         if x is None or y is None:
             try:
-                x = self.winfo_pointerx()
-                y = self.winfo_pointery()
+                x, y = self.winfo_pointerx(), self.winfo_pointery()
             except Exception:
                 x, y = 100, 100
         try:
@@ -494,13 +503,40 @@ class StyledPopupMenu(ctk.CTkToplevel):
         except Exception:
             pass
 
-        # Close on Escape or focus loss. FocusOut runs through `after()`
-        # so child-button focus events don't trigger a premature close.
-        self.bind("<Escape>", lambda _e: self._close())
-        self.bind("<FocusOut>", lambda _e: self.after(80, self._maybe_close))
+        # Global grab — captures all pointer events, bypasses any local
+        # grab that a parent window (e.g. a modal dialog) may hold.
         try:
-            self.lift()
+            self.grab_set_global()
+        except Exception:
+            try:
+                self.grab_set()
+            except Exception:
+                pass
+
+        self.lift()
+        try:
             self.focus_force()
+        except Exception:
+            pass
+
+        # Close on Escape
+        self.bind("<Escape>", lambda _e: self._close())
+        # Close when the click lands outside the popup bounds.
+        # With global grab, Button-1 on any screen position is delivered
+        # here; we check screen coords to distinguish inside/outside.
+        self.bind("<Button-1>", self._on_any_click, add="+")
+
+    # ----- internals -----
+
+    def _on_any_click(self, event):
+        """Global grab delivers all Button-1 events here. Close if the
+        click was outside the popup's screen rectangle."""
+        try:
+            px, py = self.winfo_rootx(), self.winfo_rooty()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            if not (px <= event.x_root <= px + pw and
+                    py <= event.y_root <= py + ph):
+                self._close()
         except Exception:
             pass
 
@@ -512,32 +548,22 @@ class StyledPopupMenu(ctk.CTkToplevel):
             except Exception as e:
                 print(f"[StyledPopupMenu] command raised: {e}")
 
-    def _maybe_close(self):
-        if self._closed:
-            return
-        try:
-            if not self.winfo_exists():
-                return
-        except Exception:
-            return
-        try:
-            focused = self.focus_displayof()
-        except Exception:
-            focused = None
-        if focused is None:
-            self._close()
-            return
-        try:
-            if str(focused).startswith(str(self)):
-                return
-        except Exception:
-            pass
-        self._close()
-
     def _close(self):
         if self._closed:
             return
         self._closed = True
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        # Restore the grab that was active before we opened so the parent
+        # modal continues to own events correctly.
+        if self._prev_grab:
+            try:
+                if self._prev_grab.winfo_exists():
+                    self._prev_grab.grab_set()
+            except Exception:
+                pass
         try:
             self.destroy()
         except Exception:
