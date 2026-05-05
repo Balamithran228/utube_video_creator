@@ -81,14 +81,18 @@ class LauncherApp:
     def __init__(self, root):
         self.root = root
         self.root.title("YouTube video toolkit")
-        self.root.geometry("720x520")
-        self.root.minsize(660, 480)
+        # Sized to comfortably fit all current tool cards + title + button row.
+        # The button row is anchored to the bottom (packed first below) so it
+        # stays visible even if the window is squeezed smaller.
+        self.root.geometry("760x680")
+        self.root.minsize(680, 600)
 
         self.choice = tk.StringVar(value=TOOLS[0]["key"])
 
         outer = ttk.Frame(self.root, padding=20)
         outer.pack(fill="both", expand=True)
 
+        # Header
         ttk.Label(
             outer,
             text="What would you like to do?",
@@ -98,22 +102,27 @@ class LauncherApp:
             outer,
             text="Pick one option below, then click Continue.",
             foreground="#555",
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(anchor="w", pady=(0, 10))
 
-        # One radio-button card per tool
-        for tool in TOOLS:
-            self._build_tool_card(outer, tool)
-
-        # Continue / workspace buttons at the bottom
+        # IMPORTANT: pack the bottom button row FIRST with side="bottom" so it's
+        # always anchored to the bottom of the window. Without this, packing it
+        # after the cards (which expand naturally) can push the Continue button
+        # off-screen when there are many cards or the window is short.
         btn_row = ttk.Frame(outer)
-        btn_row.pack(fill="x", pady=(16, 0))
+        btn_row.pack(side="bottom", fill="x", pady=(16, 0))
         ttk.Button(
             btn_row, text="📂 Open workspace folder",
             command=self._open_workspace,
         ).pack(side="left")
         ttk.Button(
-            btn_row, text="Continue ▶", command=self._continue, width=18,
+            btn_row, text="Continue ▶", command=self._continue, width=20,
         ).pack(side="right")
+
+        # Cards fill the space between the header and the bottom button row.
+        cards_frame = ttk.Frame(outer)
+        cards_frame.pack(side="top", fill="both", expand=True)
+        for tool in TOOLS:
+            self._build_tool_card(cards_frame, tool)
 
         # Allow Enter to act as Continue
         self.root.bind("<Return>", lambda _e: self._continue())
