@@ -2,6 +2,10 @@ pydub>=0.25.1
 Pillow>=9.0.0
 numpy>=1.22.0
 
+# Voice Editor (voice_editor.py) — modern UI + audio playback.
+customtkinter>=5.2.0
+sounddevice>=0.4.6
+
 # Optional — only needed if you use the VAD pipeline (simple_video_creator.py --vad).
 # Uncomment to install:
 # silero-vad>=5.0

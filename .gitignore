@@ -22,6 +22,7 @@ _test_*.mp3
 _test_*.mp4
 _test_*.wav
 _transcript_dump.txt
+_voice_editor_e2e_out.*
 
 # Pipeline temp dirs (created by tempfile.mkdtemp prefixes used in the code)
 svc_*/

@@ -53,6 +53,17 @@ TOOLS = [
         "args": [],
     },
     {
+        "key": "voice_edit",
+        "title": "Trim & clean a voice recording",
+        "subtitle": (
+            "Load any voice file, paint cut regions on the waveform to remove "
+            "silences, mistakes, or breaths anywhere in the audio, and export "
+            "a clean continuous WAV or MP3 with the cuts removed."
+        ),
+        "script": "voice_editor.py",
+        "args": [],
+    },
+    {
         "key": "mp3",
         "title": "Convert video/audio → MP3",
         "subtitle": (
