@@ -320,6 +320,73 @@ def _open_with_default_player(path: str) -> bool:
         return False
 
 
+# ─────────────────────────── Window-control button strip ───────────────────────────
+
+def _add_wm_buttons(bar: "ctk.CTkFrame", window, theme: dict,
+                    allow_fullscreen: bool = True) -> None:
+    """Append  −  □  ⛶  (minimize / maximize / fullscreen) buttons to the
+    right side of any header/topbar frame.
+
+    − = iconify (minimize to taskbar)
+    □ = toggle between normal and zoomed (maximised)
+    ⛶ = toggle fullscreen (no decorations, fills the screen). Hidden for
+         small utility dialogs when allow_fullscreen=False."""
+
+    t = theme
+    BTN_W, BTN_H = 32, 28
+
+    def _minimize():
+        try:
+            window.iconify()
+        except Exception:
+            pass
+
+    def _toggle_maximize():
+        try:
+            if window.state() == "zoomed":
+                window.state("normal")
+            else:
+                window.state("zoomed")
+        except Exception:
+            pass
+
+    def _toggle_fullscreen():
+        try:
+            cur = bool(window.attributes("-fullscreen"))
+            window.attributes("-fullscreen", not cur)
+        except Exception:
+            pass
+
+    # Container so the three buttons sit flush against each other
+    grp = ctk.CTkFrame(bar, fg_color="transparent")
+    grp.pack(side="right", padx=(4, 10), pady=6)
+
+    ctk.CTkButton(
+        grp, text="−", width=BTN_W, height=BTN_H,
+        command=_minimize,
+        fg_color=t["panel2"], hover_color=t["accent2"],
+        text_color=t["text"], corner_radius=6,
+        font=ctk.CTkFont("Segoe UI", 14, "bold"),
+    ).pack(side="left", padx=2)
+
+    ctk.CTkButton(
+        grp, text="□", width=BTN_W, height=BTN_H,
+        command=_toggle_maximize,
+        fg_color=t["panel2"], hover_color=t["accent2"],
+        text_color=t["text"], corner_radius=6,
+        font=ctk.CTkFont("Segoe UI", 12, "bold"),
+    ).pack(side="left", padx=2)
+
+    if allow_fullscreen:
+        ctk.CTkButton(
+            grp, text="⛶", width=BTN_W, height=BTN_H,
+            command=_toggle_fullscreen,
+            fg_color=t["panel2"], hover_color=t["accent"],
+            text_color=t["text"], corner_radius=6,
+            font=ctk.CTkFont("Segoe UI", 11),
+        ).pack(side="left", padx=2)
+
+
 # ─────────────────────────── Styled popup menu ───────────────────────────
 
 class StyledPopupMenu(ctk.CTkToplevel):
@@ -793,6 +860,7 @@ class ConfirmAudioModal(ctk.CTkToplevel):
             border_width=1, border_color=t["stroke"],
         )
         top.pack(fill="x", padx=14, pady=(14, 8))
+        _add_wm_buttons(top, self, t, allow_fullscreen=False)
         ctk.CTkLabel(
             top, text="Trimmed audio",
             font=ctk.CTkFont("Segoe UI", 16, "bold"),
@@ -967,6 +1035,7 @@ class SegmentEditorModal(ctk.CTkToplevel):
             border_width=1, border_color=t["stroke"],
         )
         topbar.pack(fill="x", padx=14, pady=(14, 8))
+        _add_wm_buttons(topbar, self, t, allow_fullscreen=True)
 
         ctk.CTkLabel(
             topbar, text=f"Edit — {segment_label}",
@@ -1391,6 +1460,7 @@ class DeleteImageModal(ctk.CTkToplevel):
             border_width=1, border_color=t["stroke"],
         )
         header.pack(fill="x", padx=14, pady=(14, 8))
+        _add_wm_buttons(header, self, t, allow_fullscreen=False)
         ctk.CTkLabel(
             header, text=f"Delete — {segment_label}",
             font=ctk.CTkFont("Segoe UI", 16, "bold"),
@@ -1556,6 +1626,7 @@ class DeleteAudioModal(ctk.CTkToplevel):
             border_width=1, border_color=t["stroke"],
         )
         header.pack(fill="x", padx=14, pady=(14, 8))
+        _add_wm_buttons(header, self, t, allow_fullscreen=False)
         ctk.CTkLabel(
             header, text=f"Audio actions — {segment_label}",
             font=ctk.CTkFont("Segoe UI", 16, "bold"),
@@ -1787,12 +1858,15 @@ class SegmentDetailModal(ctk.CTkToplevel):
         )
         self.position_label.pack(side="left", padx=(0, 16), pady=10)
 
+        # Window controls  − □ ⛶  appear first so they're flush-right
+        _add_wm_buttons(topbar, self, t, allow_fullscreen=True)
+
         ctk.CTkButton(
             topbar, text="✕  Close", width=88,
             command=self._close,
             fg_color=t["panel2"], hover_color=t["danger"],
             text_color=t["text"], corner_radius=10,
-        ).pack(side="right", padx=(8, 16), pady=10)
+        ).pack(side="right", padx=(4, 4), pady=10)
 
         # Quick render preview button — encodes JUST this segment (with
         # its audio + N-image weighted chunks) into a tiny MP4 and opens
@@ -2789,6 +2863,7 @@ class SegmentPreviewWindow(ctk.CTkToplevel):
             border_width=1, border_color=t["stroke"],
         )
         topbar.pack(fill="x", padx=14, pady=(14, 8))
+        _add_wm_buttons(topbar, self, t, allow_fullscreen=True)
 
         title_box = ctk.CTkFrame(topbar, fg_color="transparent")
         title_box.pack(side="left", padx=16, pady=10, fill="y")
