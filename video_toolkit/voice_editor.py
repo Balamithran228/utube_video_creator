@@ -32,6 +32,10 @@ import sounddevice as sd
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from simple_video_creator import find_ffmpeg, configure_pydub, _safe_console  # noqa: E402
+try:
+    from .paths import OUTPUT_DIR
+except ImportError:
+    from paths import OUTPUT_DIR
 
 
 # ─────────────────────────── Theme ───────────────────────────
@@ -819,6 +823,7 @@ class VoiceEditorApp:
         self.export_format = ctk.StringVar(value="WAV")
         self.export_bitrate = ctk.StringVar(value="192 kbps")
         self.is_exporting = False
+        self.last_saved_path: Optional[Path] = None
 
         self._build_ui()
         self._refresh_cut_list()
@@ -1080,12 +1085,19 @@ class VoiceEditorApp:
         self.bitrate_menu.pack(fill="x", padx=12, pady=(2, 10))
 
         self.export_btn = ctk.CTkButton(
-            side, text="💾  Export", width=220, command=self._export,
+            side, text="Save trimmed audio", width=220, command=self._export,
             fg_color=t["accent"], hover_color=hex_lerp(t["accent"], "#000000", 0.2),
             text_color="#FFFFFF", corner_radius=12,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
         )
         self.export_btn.pack(fill="x", padx=12, pady=(0, 6))
+
+        self.saved_path_label = ctk.CTkLabel(
+            side, text="Saved file: none yet",
+            text_color=t["muted"], font=ctk.CTkFont("Segoe UI", 10),
+            anchor="w", justify="left", wraplength=220,
+        )
+        self.saved_path_label.pack(fill="x", padx=14, pady=(0, 8))
 
         self.progress = ctk.CTkProgressBar(
             side, mode="determinate",
@@ -1435,7 +1447,7 @@ class VoiceEditorApp:
         default_name = self.project.source_path.stem + f"_trimmed_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
         out = filedialog.asksaveasfilename(
             title="Save trimmed audio as…",
-            initialdir=str(self.project.source_path.parent),
+            initialdir=str(OUTPUT_DIR if OUTPUT_DIR.is_dir() else self.project.source_path.parent),
             initialfile=default_name,
             defaultextension=f".{ext}",
             filetypes=[
@@ -1482,16 +1494,23 @@ class VoiceEditorApp:
         self.is_exporting = False
         self._refresh_actions()
         if ok:
-            size = Path(out_path).stat().st_size / (1024 * 1024)
+            saved_path = Path(out_path)
+            size = saved_path.stat().st_size / (1024 * 1024)
+            self.last_saved_path = saved_path
+            self.saved_path_label.configure(
+                text=f"Saved file: {saved_path}",
+                text_color=self.theme["ok"],
+            )
+            self._load_path(str(saved_path))
             self.status_label.configure(
-                text=f"Saved → {Path(out_path).name} ({size:.2f} MB)"
+                text=f"Saved and loaded -> {saved_path.name} ({size:.2f} MB)"
             )
             ans = messagebox.askyesno(
-                "Export complete",
-                f"Saved to:\n{out_path}\n\nOpen the folder now?",
+                "Saved trimmed audio",
+                f"Saved to:\n{out_path}\n\nThe saved audio is now loaded on screen.\nOpen the folder now?",
             )
             if ans:
-                self._open_folder(Path(out_path).parent)
+                self._open_folder(saved_path.parent)
         else:
             self.status_label.configure(text=f"Failed: {err}")
             messagebox.showerror("Export failed", f"Could not write file:\n{err}")

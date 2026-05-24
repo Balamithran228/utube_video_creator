@@ -80,3 +80,10 @@ ffmpeg         # the actual decoder/encoder, must be on PATH or WinGet
 ffmpeg discovery uses the same logic as the rest of the toolkit
 (`find_ffmpeg` from `simple_video_creator.py`) — so the same WinGet /
 PATH / static-candidate fallback chain applies.
+
+## Saving trimmed audio
+
+After selecting the sections to cut, click **Save trimmed audio** in the
+right-side result panel. The save dialog opens in `outputs/` when that folder
+exists. After the file is written, the editor loads that saved trimmed audio
+back on screen so the waveform and file label show the new version.
