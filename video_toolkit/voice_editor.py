@@ -1047,7 +1047,22 @@ class VoiceEditorApp:
             text_color=t["ok"], font=ctk.CTkFont("Consolas", 12, "bold"),
             anchor="w",
         )
-        self.summary_result.pack(fill="x", padx=14, pady=(0, 12))
+        self.summary_result.pack(fill="x", padx=14, pady=(0, 8))
+
+        self.export_btn = ctk.CTkButton(
+            side, text="Save trimmed audio", width=220, command=self._export,
+            fg_color=t["accent"], hover_color=hex_lerp(t["accent"], "#000000", 0.2),
+            text_color="#FFFFFF", corner_radius=12,
+            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+        )
+        self.export_btn.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.saved_path_label = ctk.CTkLabel(
+            side, text="Saved file: none yet",
+            text_color=t["muted"], font=ctk.CTkFont("Segoe UI", 10),
+            anchor="w", justify="left", wraplength=220,
+        )
+        self.saved_path_label.pack(fill="x", padx=14, pady=(0, 8))
 
         # Export options
         exp_box = ctk.CTkFrame(side, fg_color=t["panel2"], corner_radius=10)
@@ -1083,21 +1098,6 @@ class VoiceEditorApp:
             text_color=t["text"], dropdown_fg_color=t["panel"], dropdown_text_color=t["text"],
         )
         self.bitrate_menu.pack(fill="x", padx=12, pady=(2, 10))
-
-        self.export_btn = ctk.CTkButton(
-            side, text="Save trimmed audio", width=220, command=self._export,
-            fg_color=t["accent"], hover_color=hex_lerp(t["accent"], "#000000", 0.2),
-            text_color="#FFFFFF", corner_radius=12,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
-        )
-        self.export_btn.pack(fill="x", padx=12, pady=(0, 6))
-
-        self.saved_path_label = ctk.CTkLabel(
-            side, text="Saved file: none yet",
-            text_color=t["muted"], font=ctk.CTkFont("Segoe UI", 10),
-            anchor="w", justify="left", wraplength=220,
-        )
-        self.saved_path_label.pack(fill="x", padx=14, pady=(0, 8))
 
         self.progress = ctk.CTkProgressBar(
             side, mode="determinate",
