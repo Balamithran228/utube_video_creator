@@ -83,7 +83,8 @@ PATH / static-candidate fallback chain applies.
 
 ## Saving trimmed audio
 
-After selecting the sections to cut, click **Save trimmed audio** in the
-right-side result panel. The save dialog opens in `outputs/` when that folder
+After selecting the sections to cut, click **Export trimmed audio** in the
+right-side result panel. That panel scrolls when the export options do not fit
+on screen. The save dialog opens in `outputs/` when that folder
 exists. After the file is written, the editor loads that saved trimmed audio
 back on screen so the waveform and file label show the new version.

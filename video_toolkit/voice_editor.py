@@ -1018,9 +1018,12 @@ class VoiceEditorApp:
         self.cut_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # ----- Summary + Export -----
-        side = ctk.CTkFrame(
+        side = ctk.CTkScrollableFrame(
             bottom, fg_color=t["panel"], corner_radius=14,
             border_width=1, border_color=t["stroke"],
+            scrollbar_button_color=t["panel2"],
+            scrollbar_button_hover_color=t["accent"],
+            width=340,
         )
         side.pack(side="right", fill="y")
 
@@ -1050,7 +1053,7 @@ class VoiceEditorApp:
         self.summary_result.pack(fill="x", padx=14, pady=(0, 8))
 
         self.export_btn = ctk.CTkButton(
-            side, text="Save trimmed audio", width=220, command=self._export,
+            side, text="Export trimmed audio", width=220, command=self._export,
             fg_color=t["accent"], hover_color=hex_lerp(t["accent"], "#000000", 0.2),
             text_color="#FFFFFF", corner_radius=12,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
