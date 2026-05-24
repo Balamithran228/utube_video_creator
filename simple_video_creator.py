@@ -18,7 +18,9 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 try:
     from pydub import AudioSegment
@@ -28,6 +30,29 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub"])
     from pydub import AudioSegment
     from pydub.silence import detect_nonsilent
+
+
+THEMES = {
+    "dark": {
+        "bg": "#0F1117", "panel": "#181B25", "panel2": "#222637",
+        "stroke": "#2C3145", "text": "#F5F7FA", "muted": "#8B92A6",
+        "accent": "#7C5CFF", "accent2": "#22D3EE", "accent3": "#F472B6",
+        "danger": "#F43F5E", "ok": "#34D399",
+    },
+    "light": {
+        "bg": "#F5F6FB", "panel": "#FFFFFF", "panel2": "#EEF0F8",
+        "stroke": "#D9DDEA", "text": "#0F1117", "muted": "#5C6478",
+        "accent": "#6D4AFF", "accent2": "#0891B2", "accent3": "#DB2777",
+        "danger": "#E11D48", "ok": "#059669",
+    },
+}
+
+
+def hex_lerp(c1: str, c2: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
 
 
 WORKSPACE = Path(__file__).resolve().parent
@@ -229,8 +254,11 @@ class VideoCreator:
     def __init__(self, root):
         self.root = root
         self.root.title("Simple Video Creator")
-        self.root.geometry("760x620")
+        self.root.geometry("780x660")
         self.root.minsize(720, 580)
+
+        self.T = THEMES["dark"]
+        self.root.configure(fg_color=self.T["bg"])
 
         self.images_dir = tk.StringVar()
         self.audio_file = tk.StringVar()
@@ -251,76 +279,139 @@ class VideoCreator:
             self._log("WARNING", "Download: https://www.gyan.dev/ffmpeg/builds/  (add bin folder to PATH)")
 
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 6}
-        outer = ttk.Frame(self.root, padding=12)
-        outer.pack(fill="both", expand=True)
+        T = self.T
+        outer = ctk.CTkFrame(self.root, fg_color=T["bg"])
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
 
         # === Source selection ===
-        src = ttk.LabelFrame(outer, text="1. Pick your files", padding=10)
-        src.pack(fill="x", pady=(0, 8))
+        sec1 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec1.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec1, text="1.  Pick your files",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        src = ctk.CTkFrame(sec1, fg_color="transparent")
+        src.pack(fill="x", padx=12, pady=(0, 12))
         src.columnconfigure(1, weight=1)
 
-        ttk.Label(src, text="Images folder:").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(src, textvariable=self.images_dir).grid(row=0, column=1, sticky="ew", **pad)
-        ttk.Button(src, text="Browse…", command=self._browse_images).grid(row=0, column=2, **pad)
+        ctk.CTkLabel(src, text="Images folder:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ctk.CTkEntry(src, textvariable=self.images_dir, placeholder_text="Pick a folder of images…",
+                      fg_color=T["panel2"], border_color=T["stroke"],
+                      text_color=T["text"], placeholder_text_color=T["muted"],
+                      ).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=4)
+        ctk.CTkButton(src, text="Browse…", command=self._browse_images, width=90,
+                       fg_color=T["panel2"], hover_color=T["stroke"],
+                       text_color=T["text"], border_width=1, border_color=T["stroke"],
+                       ).grid(row=0, column=2, pady=4)
 
-        ttk.Label(src, text="Voice file:").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(src, textvariable=self.audio_file).grid(row=1, column=1, sticky="ew", **pad)
-        ttk.Button(src, text="Browse…", command=self._browse_audio).grid(row=1, column=2, **pad)
+        ctk.CTkLabel(src, text="Voice file:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ctk.CTkEntry(src, textvariable=self.audio_file, placeholder_text="Pick a voice recording…",
+                      fg_color=T["panel2"], border_color=T["stroke"],
+                      text_color=T["text"], placeholder_text_color=T["muted"],
+                      ).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        ctk.CTkButton(src, text="Browse…", command=self._browse_audio, width=90,
+                       fg_color=T["panel2"], hover_color=T["stroke"],
+                       text_color=T["text"], border_width=1, border_color=T["stroke"],
+                       ).grid(row=1, column=2, pady=4)
 
-        ttk.Button(
-            src,
-            text="✨ Use workspace defaults (section-20260502-235344 + enhanced mp33.mp3)",
+        ctk.CTkButton(
+            src, text="✨  Use workspace defaults (section-20260502-235344 + enhanced mp33.mp3)",
             command=self._use_defaults,
-        ).grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(4, 0))
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["accent2"], border_width=1, border_color=T["stroke"],
+            anchor="w",
+        ).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
         # === Settings summary ===
-        info = ttk.LabelFrame(outer, text="2. Settings (fixed for top quality)", padding=10)
-        info.pack(fill="x", pady=(0, 8))
-        ttk.Label(
-            info,
+        sec2 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec2.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec2, text="2.  Settings (fixed for top quality)",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        ctk.CTkLabel(
+            sec2,
             text=(
-                f"• Output: {VIDEO_W}×{VIDEO_H} (16:9), {FPS} fps, H.264 high quality\n"
-                f"• Silences ≥ {MIN_SILENCE_MS} ms are removed\n"
-                "• Photo N is shown for the duration of speech segment N\n"
-                "• Image fits inside the 16:9 frame (black bars added if needed — no cropping)"
+                f"  •  Output: {VIDEO_W}×{VIDEO_H} (16:9), {FPS} fps, H.264 high quality\n"
+                f"  •  Silences ≥ {MIN_SILENCE_MS} ms are removed\n"
+                "  •  Photo N is shown for the duration of speech segment N\n"
+                "  •  Image fits inside the 16:9 frame (black bars if needed — no cropping)"
             ),
-            justify="left",
-        ).pack(anchor="w")
+            justify="left", text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
+        ).pack(anchor="w", padx=14, pady=(0, 12))
 
-        # === Convert button ===
-        btn_row = ttk.Frame(outer)
+        # === Buttons ===
+        btn_row = ctk.CTkFrame(outer, fg_color="transparent")
         btn_row.pack(fill="x", pady=(0, 8))
-        self.convert_btn = ttk.Button(btn_row, text="▶  Convert", command=self._start, width=18)
+        self.convert_btn = ctk.CTkButton(
+            btn_row, text="▶   Convert", command=self._start, width=150,
+            fg_color=T["accent"], hover_color=hex_lerp(T["accent"], "#FFFFFF", 0.15),
+            text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 13, weight="bold"),
+        )
         self.convert_btn.pack(side="left")
-        self.stop_btn = ttk.Button(btn_row, text="⏹  Stop", command=self._stop, width=12, state="disabled")
-        self.stop_btn.pack(side="left", padx=(8, 0))
-        self.open_btn = ttk.Button(btn_row, text="📂 Open workspace", command=self._open_workspace, width=18)
+        self.stop_btn = ctk.CTkButton(
+            btn_row, text="⏹  Stop", command=self._stop, width=110, state="disabled",
+            fg_color=T["panel2"], hover_color=T["danger"],
+            text_color=T["muted"], border_width=1, border_color=T["stroke"],
+        )
+        self.stop_btn.pack(side="left", padx=(10, 0))
+        self.open_btn = ctk.CTkButton(
+            btn_row, text="📂  Open workspace", command=self._open_workspace, width=160,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        )
         self.open_btn.pack(side="right")
 
         # === Progress ===
-        prog = ttk.LabelFrame(outer, text="3. Progress", padding=10)
-        prog.pack(fill="x", pady=(0, 8))
-        prog.columnconfigure(0, weight=1)
-
-        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
-        self.percent_label.grid(row=0, column=1, padx=(8, 0))
-
-        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
-        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        sec3 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec3.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec3, text="3.  Progress",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        p_inner = ctk.CTkFrame(sec3, fg_color="transparent")
+        p_inner.pack(fill="x", padx=12, pady=(0, 12))
+        p_row = ctk.CTkFrame(p_inner, fg_color="transparent")
+        p_row.pack(fill="x")
+        p_row.columnconfigure(0, weight=1)
+        self.progress = ctk.CTkProgressBar(
+            p_row, progress_color=T["accent"], fg_color=T["panel2"],
+            height=14, corner_radius=7,
+        )
+        self.progress.set(0)
+        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.percent_label = ctk.CTkLabel(
+            p_row, text="0%", width=50, anchor="e",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
+        )
+        self.percent_label.grid(row=0, column=1)
+        self.status_label = ctk.CTkLabel(
+            p_inner, text="Idle", text_color=T["muted"],
+            font=ctk.CTkFont("Segoe UI", 11), anchor="w",
+        )
+        self.status_label.pack(anchor="w", pady=(6, 0))
 
         # === Log ===
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
-        log_frame.pack(fill="both", expand=True)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, wrap="word", font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
-        self.log_text.tag_config("INFO", foreground="#222")
-        self.log_text.tag_config("OK", foreground="#1a7f1a")
-        self.log_text.tag_config("WARNING", foreground="#b86b00")
-        self.log_text.tag_config("ERROR", foreground="#c0392b")
-        self.log_text.tag_config("STEP", foreground="#1f4e8c", font=("Consolas", 9, "bold"))
+        sec4 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec4.pack(fill="both", expand=True)
+        ctk.CTkLabel(sec4, text="Log",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        self.log_text = ctk.CTkTextbox(
+            sec4, font=ctk.CTkFont("Consolas", 10),
+            fg_color=T["panel2"], text_color=T["text"],
+            wrap="word", corner_radius=8,
+        )
+        self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.log_text._textbox.tag_config("INFO", foreground=T["text"])
+        self.log_text._textbox.tag_config("OK", foreground=T["ok"])
+        self.log_text._textbox.tag_config("WARNING", foreground="#F59E0B")
+        self.log_text._textbox.tag_config("ERROR", foreground=T["danger"])
+        self.log_text._textbox.tag_config("STEP", foreground=T["accent2"],
+                                           font=("Consolas", 10, "bold"))
 
     # ---------- UI helpers ----------
     def _browse_images(self):
@@ -369,18 +460,18 @@ class VideoCreator:
             while True:
                 level, msg = self.log_queue.get_nowait()
                 tag = level if level in ("INFO", "OK", "WARNING", "ERROR", "STEP") else "INFO"
-                self.log_text.insert("end", msg + "\n", tag)
-                self.log_text.see("end")
+                self.log_text._textbox.insert("end", msg + "\n", tag)
+                self.log_text._textbox.see("end")
         except queue.Empty:
             pass
         self.root.after(100, self._poll_log)
 
     def _set_progress(self, pct, status=None):
         pct = max(0, min(100, int(pct)))
-        self.progress["value"] = pct
-        self.percent_label.config(text=f"{pct}%")
+        self.progress.set(pct / 100)
+        self.percent_label.configure(text=f"{pct}%")
         if status is not None:
-            self.status_label.config(text=status)
+            self.status_label.configure(text=status)
         self.root.update_idletasks()
 
     # ---------- Pipeline control ----------
@@ -406,9 +497,9 @@ class VideoCreator:
 
         self.is_running = True
         self.stop_requested = False
-        self.convert_btn.config(state="disabled")
-        self.stop_btn.config(state="normal")
-        self.log_text.delete("1.0", "end")
+        self.convert_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self.log_text._textbox.delete("1.0", "end")
         self._set_progress(0, "Starting…")
         threading.Thread(target=self._run_pipeline_safe, daemon=True).start()
 
@@ -418,8 +509,8 @@ class VideoCreator:
 
     def _finish(self, ok, output_path=None):
         self.is_running = False
-        self.convert_btn.config(state="normal")
-        self.stop_btn.config(state="disabled")
+        self.convert_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
         if ok and output_path:
             self._set_progress(100, f"Done → {output_path.name}")
             self.root.after(
@@ -1068,13 +1159,9 @@ def main():
             result = run_headless(images, audio)
         sys.exit(0 if result else 1)
 
-    root = tk.Tk()
-    try:
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     VideoCreator(root)
     root.mainloop()
 

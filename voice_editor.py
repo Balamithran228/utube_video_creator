@@ -339,8 +339,9 @@ class Player:
         self.skip_regions: List[Tuple[int, int]] = []  # in sample units, sorted
         self.skip_enabled: bool = False
         self.is_playing: bool = False
-        self.on_position = None      # callback(seconds)
+        self.on_position = None      # kept for API compat; no longer called from audio thread
         self.on_finished = None      # callback()
+        self._pos_seconds: float = 0.0   # written by audio thread; read by UI poll
         self._lock = threading.Lock()
 
     def load(self, samples: np.ndarray, sr: int):
@@ -348,6 +349,7 @@ class Player:
         self.samples = samples
         self.sr = sr
         self.position = 0
+        self._pos_seconds = 0.0
 
     def set_skip_regions_seconds(self, regions: List[Tuple[float, float]]):
         with self._lock:
@@ -362,6 +364,7 @@ class Player:
         if self.samples is None:
             return
         self.position = max(0, min(len(self.samples) - 1, int(round(s * self.sr))))
+        self._pos_seconds = self.position / self.sr if self.sr else 0.0
 
     def toggle(self, from_s: Optional[float] = None):
         if self.is_playing:
@@ -383,7 +386,7 @@ class Player:
                 channels=channels,
                 callback=self._callback,
                 dtype="float32",
-                blocksize=1024,
+                blocksize=4096,
                 finished_callback=self._on_stream_finished,
             )
             self.stream.start()
@@ -399,6 +402,7 @@ class Player:
     def stop(self):
         self.pause()
         self.position = 0
+        self._pos_seconds = 0.0
 
     def _close_stream(self):
         if self.stream is not None:
@@ -442,6 +446,7 @@ class Player:
             if pos >= n_total:
                 outdata[:] = 0
                 self.position = n_total
+                self._pos_seconds = self.position / self.sr if self.sr else 0.0
                 raise sd.CallbackStop
 
             # How far can we copy before bumping into the next skip region?
@@ -463,12 +468,7 @@ class Player:
             if n < frames:
                 outdata[n:] = 0
             self.position = chunk_end
-
-            if self.on_position:
-                try:
-                    self.on_position(self.position / self.sr)
-                except Exception:
-                    pass
+            self._pos_seconds = self.position / self.sr if self.sr else 0.0
 
 
 # ─────────────────────────── Waveform Canvas ───────────────────────────
@@ -528,6 +528,19 @@ class WaveformCanvas(tk.Canvas):
     def set_cursor(self, s: float):
         self.cursor_s = max(0.0, min(self.duration_s, s))
         self._schedule_redraw()
+
+    def move_cursor_only(self, s: float):
+        """Move the playhead without repainting the full waveform."""
+        self.cursor_s = max(0.0, min(self.duration_s, s))
+        line = self.find_withtag("playhead_line")
+        marker = self.find_withtag("playhead_marker")
+        if not line or not marker:
+            self._schedule_redraw()
+            return
+        h = self.winfo_height()
+        cx = self.s_to_x(self.cursor_s)
+        self.coords(line[0], cx, 0, cx, h)
+        self.coords(marker[0], cx - 6, 0, cx + 6, 0, cx, 8)
 
     def set_theme(self, theme):
         self.theme = theme
@@ -671,10 +684,10 @@ class WaveformCanvas(tk.Canvas):
 
         # Cursor
         cx = self.s_to_x(self.cursor_s)
-        self.create_line(cx, 0, cx, h, fill=t["cursor"], width=2)
+        self.create_line(cx, 0, cx, h, fill=t["cursor"], width=2, tags=("playhead", "playhead_line"))
         self.create_polygon(
             cx - 6, 0, cx + 6, 0, cx, 8,
-            fill=t["cursor"], outline=t["cursor"],
+            fill=t["cursor"], outline=t["cursor"], tags=("playhead", "playhead_marker"),
         )
 
     def _nice_step(self, view_w: float) -> float:
@@ -796,8 +809,8 @@ class VoiceEditorApp:
 
         self.project: Optional[Project] = None
         self.player = Player()
-        self.player.on_position = self._on_player_position
         self.player.on_finished = lambda: self.root.after(0, self._on_player_finished)
+        self._playhead_after_id = None
 
         self.ffmpeg = find_ffmpeg()
         configure_pydub(self.ffmpeg)
@@ -1168,6 +1181,7 @@ class VoiceEditorApp:
             return
         if self.player.is_playing:
             self.player.pause()
+            self._cancel_playhead_poll()
             self.play_btn.configure(text="▶  Play")
         else:
             from_s = None
@@ -1175,24 +1189,46 @@ class VoiceEditorApp:
                 from_s = 0.0
             self._sync_player_skips()
             self.player.play(from_s)
-            self.play_btn.configure(text="⏸  Pause")
+            if self.player.is_playing:
+                self._start_playhead_poll()
+                self.play_btn.configure(text="⏸  Pause")
 
     def _stop_play(self):
         self.player.stop()
+        self._cancel_playhead_poll()
         self.play_btn.configure(text="▶  Play")
         self.canvas.set_cursor(0.0)
         self._update_time_label(0.0)
 
-    def _on_player_position(self, s: float):
-        self.root.after(0, lambda: self._on_player_position_ui(s))
+    def _start_playhead_poll(self):
+        self._cancel_playhead_poll()
+        self._poll_playhead()
 
-    def _on_player_position_ui(self, s: float):
-        self.canvas.set_cursor(s)
+    def _cancel_playhead_poll(self):
+        if self._playhead_after_id is not None:
+            try:
+                self.root.after_cancel(self._playhead_after_id)
+            except Exception:
+                pass
+            self._playhead_after_id = None
+
+    def _poll_playhead(self):
+        if not self.project:
+            self._playhead_after_id = None
+            return
+        s = self.player._pos_seconds
+        self.canvas.move_cursor_only(s)
         self._update_time_label(s)
+        if self.player.is_playing:
+            self._playhead_after_id = self.root.after(40, self._poll_playhead)
+        else:
+            self._playhead_after_id = None
 
     def _on_player_finished(self):
+        self._cancel_playhead_poll()
         self.play_btn.configure(text="▶  Play")
         self.player.position = 0
+        self.player._pos_seconds = 0.0
         self.canvas.set_cursor(0.0)
         self._update_time_label(0.0)
 

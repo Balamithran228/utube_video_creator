@@ -18,24 +18,62 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from simple_video_creator import find_ffmpeg, configure_pydub, _safe_console  # noqa: E402
 
-# Anything ffmpeg can read as an audio source is fair game for input.
 INPUT_EXTS = {
-    ".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".flv",     # video
-    ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".mp3", ".wma",  # audio
+    ".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".flv",
+    ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".mp3", ".wma",
 }
 
 BITRATE_PRESETS = ["128 kbps", "192 kbps", "256 kbps", "320 kbps"]
 DEFAULT_BITRATE = "192 kbps"
 
+THEMES = {
+    "dark": {
+        "appearance": "dark",
+        "bg": "#0F1117",
+        "panel": "#181B25",
+        "panel2": "#222637",
+        "stroke": "#2C3145",
+        "text": "#F5F7FA",
+        "muted": "#8B92A6",
+        "accent": "#7C5CFF",
+        "accent2": "#22D3EE",
+        "accent3": "#F472B6",
+        "danger": "#F43F5E",
+        "ok": "#34D399",
+    },
+    "light": {
+        "appearance": "light",
+        "bg": "#F5F6FB",
+        "panel": "#FFFFFF",
+        "panel2": "#EEF0F8",
+        "stroke": "#D9DDEA",
+        "text": "#0F1117",
+        "muted": "#5C6478",
+        "accent": "#6D4AFF",
+        "accent2": "#0891B2",
+        "accent3": "#DB2777",
+        "danger": "#E11D48",
+        "ok": "#059669",
+    },
+}
+
+
+def hex_lerp(c1: str, c2: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
+
 
 def bitrate_to_ffmpeg(label):
-    """'192 kbps' -> '192k'."""
     return label.split()[0] + "k"
 
 
@@ -43,8 +81,11 @@ class AudioConverterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Audio Converter — Video/Audio → MP3")
-        self.root.geometry("760x540")
-        self.root.minsize(720, 480)
+        self.root.geometry("780x600")
+        self.root.minsize(720, 520)
+
+        self.T = THEMES["dark"]
+        self.root.configure(fg_color=self.T["bg"])
 
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
@@ -65,74 +106,151 @@ class AudioConverterApp:
 
     # ---------- UI ----------
     def _build_ui(self):
-        outer = ttk.Frame(self.root, padding=12)
-        outer.pack(fill="both", expand=True)
+        T = self.T
 
-        ttk.Label(
-            outer,
-            text="Convert any video or audio file into an MP3.",
-            font=("Segoe UI", 11, "bold"),
+        outer = ctk.CTkFrame(self.root, fg_color=T["bg"])
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # Title
+        ctk.CTkLabel(
+            outer, text="Convert video / audio  →  MP3",
+            font=ctk.CTkFont("Segoe UI", 20, weight="bold"),
+            text_color=T["text"],
         ).pack(anchor="w", pady=(0, 4))
-        ttk.Label(
+        ctk.CTkLabel(
             outer,
-            text="The output MP3 saves to the location you choose. By default it goes next to the input file.",
-            foreground="#555",
-        ).pack(anchor="w", pady=(0, 12))
+            text="Pick any video or audio file — the audio track is extracted and saved as an MP3.",
+            font=ctk.CTkFont("Segoe UI", 12),
+            text_color=T["muted"],
+        ).pack(anchor="w", pady=(0, 14))
 
         # 1. Input
-        src = ttk.LabelFrame(outer, text="1. Input file", padding=10)
-        src.pack(fill="x", pady=(0, 8))
-        src.columnconfigure(0, weight=1)
-        ttk.Entry(src, textvariable=self.input_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(src, text="Browse…", command=self._browse_input).grid(row=0, column=1)
+        sec1 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec1.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec1, text="1.  Input file",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        row1 = ctk.CTkFrame(sec1, fg_color="transparent")
+        row1.pack(fill="x", padx=12, pady=(0, 12))
+        row1.columnconfigure(0, weight=1)
+        ctk.CTkEntry(
+            row1, textvariable=self.input_path,
+            placeholder_text="Pick a video or audio file…",
+            fg_color=T["panel2"], border_color=T["stroke"],
+            text_color=T["text"], placeholder_text_color=T["muted"],
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(
+            row1, text="Browse…", command=self._browse_input, width=96,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        ).grid(row=0, column=1)
 
         # 2. Output
-        dst = ttk.LabelFrame(outer, text="2. Output MP3", padding=10)
-        dst.pack(fill="x", pady=(0, 8))
-        dst.columnconfigure(0, weight=1)
-        ttk.Entry(dst, textvariable=self.output_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(dst, text="Browse…", command=self._browse_output).grid(row=0, column=1)
+        sec2 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec2.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec2, text="2.  Output MP3",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        row2 = ctk.CTkFrame(sec2, fg_color="transparent")
+        row2.pack(fill="x", padx=12, pady=(0, 12))
+        row2.columnconfigure(0, weight=1)
+        ctk.CTkEntry(
+            row2, textvariable=self.output_path,
+            placeholder_text="Where to save the MP3…",
+            fg_color=T["panel2"], border_color=T["stroke"],
+            text_color=T["text"], placeholder_text_color=T["muted"],
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(
+            row2, text="Browse…", command=self._browse_output, width=96,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        ).grid(row=0, column=1)
 
-        # 3. Bitrate
-        opts = ttk.LabelFrame(outer, text="3. Quality", padding=10)
-        opts.pack(fill="x", pady=(0, 8))
-        ttk.Label(opts, text="Bitrate:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Combobox(
-            opts, textvariable=self.bitrate, state="readonly",
-            values=BITRATE_PRESETS, width=14,
-        ).grid(row=0, column=1, sticky="w")
-        ttk.Label(
-            opts,
-            text="Higher = better quality, larger file. 192 kbps is a sensible default.",
-            foreground="#666",
-        ).grid(row=0, column=2, sticky="w", padx=(12, 0))
+        # 3. Quality
+        sec3 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec3.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec3, text="3.  Quality",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        row3 = ctk.CTkFrame(sec3, fg_color="transparent")
+        row3.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkLabel(row3, text="Bitrate:",
+                      text_color=T["text"], font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", padx=(0, 10))
+        ctk.CTkComboBox(
+            row3, variable=self.bitrate, values=BITRATE_PRESETS, state="readonly",
+            width=160, fg_color=T["panel2"], border_color=T["stroke"],
+            text_color=T["text"], button_color=T["stroke"],
+            button_hover_color=T["accent"],
+            dropdown_fg_color=T["panel2"], dropdown_text_color=T["text"],
+            dropdown_hover_color=T["accent"],
+        ).pack(side="left", padx=(0, 14))
+        ctk.CTkLabel(
+            row3, text="Higher = better quality, larger file.  192 kbps is a good default.",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
+        ).pack(side="left")
 
-        # 4. Action
-        btn_row = ttk.Frame(outer)
+        # 4. Buttons
+        btn_row = ctk.CTkFrame(outer, fg_color="transparent")
         btn_row.pack(fill="x", pady=(0, 8))
-        self.convert_btn = ttk.Button(btn_row, text="▶  Convert to MP3", command=self._start, width=22)
+        self.convert_btn = ctk.CTkButton(
+            btn_row, text="▶   Convert to MP3", command=self._start, width=190,
+            fg_color=T["accent"], hover_color=hex_lerp(T["accent"], "#FFFFFF", 0.15),
+            text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 13, weight="bold"),
+        )
         self.convert_btn.pack(side="left")
-        self.open_btn = ttk.Button(
-            btn_row, text="📂 Open output folder", command=self._open_output_folder, state="disabled",
+        self.open_btn = ctk.CTkButton(
+            btn_row, text="📂  Open output folder", command=self._open_output_folder,
+            width=190, state="disabled",
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["muted"], border_width=1, border_color=T["stroke"],
         )
         self.open_btn.pack(side="right")
 
         # 5. Progress
-        prog = ttk.LabelFrame(outer, text="Progress", padding=10)
-        prog.pack(fill="x", pady=(0, 8))
-        prog.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
-        self.percent_label.grid(row=0, column=1, padx=(8, 0))
-        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
-        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        sec5 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec5.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec5, text="Progress",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        p_inner = ctk.CTkFrame(sec5, fg_color="transparent")
+        p_inner.pack(fill="x", padx=12, pady=(0, 12))
+        p_row = ctk.CTkFrame(p_inner, fg_color="transparent")
+        p_row.pack(fill="x")
+        p_row.columnconfigure(0, weight=1)
+        self.progress = ctk.CTkProgressBar(
+            p_row, progress_color=T["accent"], fg_color=T["panel2"],
+            height=14, corner_radius=7,
+        )
+        self.progress.set(0)
+        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.percent_label = ctk.CTkLabel(
+            p_row, text="0%", width=50, anchor="e",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
+        )
+        self.percent_label.grid(row=0, column=1)
+        self.status_label = ctk.CTkLabel(
+            p_inner, text="Idle", text_color=T["muted"],
+            font=ctk.CTkFont("Segoe UI", 11), anchor="w",
+        )
+        self.status_label.pack(anchor="w", pady=(6, 0))
 
         # 6. Log
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
-        log_frame.pack(fill="both", expand=True)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap="word", font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
+        sec6 = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec6.pack(fill="both", expand=True)
+        ctk.CTkLabel(sec6, text="Log",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        self.log_text = ctk.CTkTextbox(
+            sec6, font=ctk.CTkFont("Consolas", 10),
+            fg_color=T["panel2"], text_color=T["text"],
+            wrap="word", corner_radius=8,
+        )
+        self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _browse_input(self):
         f = filedialog.askopenfilename(
@@ -146,7 +264,6 @@ class AudioConverterApp:
         if not f:
             return
         self.input_path.set(f)
-        # Auto-suggest output: same folder, same stem, .mp3 extension.
         if not self.output_path.get().strip():
             self._suggest_output_from_input()
 
@@ -156,7 +273,6 @@ class AudioConverterApp:
             self.output_path.set(str(inp.with_suffix(".mp3")))
 
     def _browse_output(self):
-        # If we have an input, use its folder/stem as the suggestion.
         inp = Path(self.input_path.get()) if self.input_path.get() else None
         initdir = str(inp.parent) if inp and inp.parent.is_dir() else str(HERE)
         initfile = inp.with_suffix(".mp3").name if inp else "output.mp3"
@@ -200,10 +316,10 @@ class AudioConverterApp:
 
     def _set_progress(self, pct, status=None):
         pct = max(0, min(100, int(pct)))
-        self.progress["value"] = pct
-        self.percent_label.config(text=f"{pct}%")
+        self.progress.set(pct / 100)
+        self.percent_label.configure(text=f"{pct}%")
         if status is not None:
-            self.status_label.config(text=status)
+            self.status_label.configure(text=status)
         self.root.update_idletasks()
 
     # ---------- Convert ----------
@@ -230,7 +346,6 @@ class AudioConverterApp:
                 messagebox.showerror("FFmpeg missing", "FFmpeg is required.")
                 return
 
-        # Confirm overwrite if the output already exists
         if Path(out).exists():
             ok = messagebox.askyesno(
                 "Overwrite?",
@@ -240,9 +355,9 @@ class AudioConverterApp:
                 return
 
         self.is_converting = True
-        self.convert_btn.config(state="disabled")
-        self.open_btn.config(state="disabled")
-        self.log_text.delete("1.0", "end")
+        self.convert_btn.configure(state="disabled")
+        self.open_btn.configure(state="disabled")
+        self.log_text.delete("0.0", "end")
         self._set_progress(0, "Starting…")
 
         threading.Thread(
@@ -268,8 +383,6 @@ class AudioConverterApp:
         self._log(f"Bitrate: {bitrate_arg}")
         self._set_progress(5, "Probing input…")
 
-        # `-vn` discards any video stream; `libmp3lame` is the standard MP3 encoder
-        # available in every full ffmpeg build (including Gyan.FFmpeg WinGet package).
         cmd = [
             self.ffmpeg, "-y", "-loglevel", "error", "-stats",
             "-i", str(inp),
@@ -296,11 +409,15 @@ class AudioConverterApp:
 
     def _convert_done(self, ok, out):
         self.is_converting = False
-        self.convert_btn.config(state="normal")
+        self.convert_btn.configure(state="normal")
         if ok and Path(out).exists():
             size_mb = Path(out).stat().st_size / (1024 * 1024)
-            self.status_label.config(text=f"Done → {Path(out).name} ({size_mb:.2f} MB)")
-            self.open_btn.config(state="normal")
+            self.status_label.configure(text=f"Done → {Path(out).name} ({size_mb:.2f} MB)")
+            self.open_btn.configure(
+                state="normal",
+                text_color=self.T["text"],
+                fg_color=self.T["panel2"],
+            )
             messagebox.showinfo(
                 "Conversion complete",
                 f"Saved to:\n{out}\n\nClick 'Open output folder' to find it.",
@@ -311,13 +428,9 @@ class AudioConverterApp:
 
 
 def main():
-    root = tk.Tk()
-    try:
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     AudioConverterApp(root)
     root.lift()
     root.attributes("-topmost", True)

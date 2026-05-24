@@ -27,7 +27,9 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import messagebox, filedialog
+
+import customtkinter as ctk
 
 from PIL import Image, ImageTk
 
@@ -46,6 +48,29 @@ RESOLUTION_PRESETS = {
     "2160p": (3840, 2160),
 }
 DEFAULT_RESOLUTION_KEY = "1080p"
+
+THEMES = {
+    "dark": {
+        "bg": "#0F1117", "panel": "#181B25", "panel2": "#222637",
+        "stroke": "#2C3145", "text": "#F5F7FA", "muted": "#8B92A6",
+        "accent": "#7C5CFF", "accent2": "#22D3EE", "accent3": "#F472B6",
+        "danger": "#F43F5E", "ok": "#34D399",
+    },
+    "light": {
+        "bg": "#F5F6FB", "panel": "#FFFFFF", "panel2": "#EEF0F8",
+        "stroke": "#D9DDEA", "text": "#0F1117", "muted": "#5C6478",
+        "accent": "#6D4AFF", "accent2": "#0891B2", "accent3": "#DB2777",
+        "danger": "#E11D48", "ok": "#059669",
+    },
+}
+
+
+def hex_lerp(c1: str, c2: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
+
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 THUMB_W, THUMB_H = 200, 112  # 16:9 thumbs in the gallery
@@ -104,56 +129,47 @@ class VideoMergerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Video Merger")
-        self.root.geometry("900x700")
+        self.root.geometry("940x720")
         self.root.minsize(820, 600)
+
+        self.T = THEMES["dark"]
+        self.root.configure(fg_color=self.T["bg"])
 
         self.ffmpeg = find_ffmpeg()
         configure_pydub(self.ffmpeg)
         self.ffprobe = find_ffprobe(self.ffmpeg)
 
-        # Cache of PhotoImage objects (anchor on self so they aren't GC'd)
         self._thumb_cache = {}
         self._thumb_dir = Path(tempfile.mkdtemp(prefix="vm_thumbs_"))
 
-        # Gallery state — populated by _scan_workspace()
-        # Each entry: dict(path, name, size, duration, selected: BooleanVar)
         self.videos = []
-
-        # Reorder state — list of paths in the chosen play order
         self.ordered_paths = []
 
-        # Output settings
         self.resolution_var = tk.StringVar(
             value=f"{DEFAULT_RESOLUTION_KEY} ({RESOLUTION_PRESETS[DEFAULT_RESOLUTION_KEY][0]}×{RESOLUTION_PRESETS[DEFAULT_RESOLUTION_KEY][1]})"
         )
 
-        # Render state
         self.is_rendering = False
         self.log_queue = queue.Queue()
 
-        # Outer frame — content swaps in/out of `self.body` based on the step.
-        self.outer = ttk.Frame(self.root, padding=12)
-        self.outer.pack(fill="both", expand=True)
+        T = self.T
+        self.outer = ctk.CTkFrame(self.root, fg_color=T["bg"])
+        self.outer.pack(fill="both", expand=True, padx=14, pady=14)
 
-        self.header = ttk.Label(
+        self.header = ctk.CTkLabel(
             self.outer, text="Step 1 of 2 — Pick the videos to merge",
-            font=("Segoe UI", 13, "bold"),
+            font=ctk.CTkFont("Segoe UI", 15, weight="bold"), text_color=T["text"],
         )
-        self.header.pack(anchor="w", pady=(0, 8))
+        self.header.pack(anchor="w", pady=(0, 10))
 
-        self.body = ttk.Frame(self.outer)
+        self.body = ctk.CTkFrame(self.outer, fg_color="transparent")
         self.body.pack(fill="both", expand=True)
 
-        self.footer = ttk.Frame(self.outer)
-        self.footer.pack(fill="x", pady=(8, 0))
+        self.footer = ctk.CTkFrame(self.outer, fg_color="transparent")
+        self.footer.pack(fill="x", pady=(10, 0))
 
-        # Background log poller (used during render)
         self._poll_log()
-
-        # Kick off the gallery view
         self._show_gallery()
-
-        # Clean up the thumb temp dir on close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
@@ -216,7 +232,7 @@ class VideoMergerApp:
                 pass
 
         # Placeholder grey rectangle if extraction failed
-        placeholder = Image.new("RGB", (THUMB_W, THUMB_H), color="#444")
+        placeholder = Image.new("RGB", (THUMB_W, THUMB_H), color="#222637")
         photo = ImageTk.PhotoImage(placeholder)
         self._thumb_cache[key] = photo
         return photo
@@ -229,73 +245,72 @@ class VideoMergerApp:
             child.destroy()
 
     def _show_gallery(self):
+        T = self.T
         self._clear_body()
-        self.header.config(text="Step 1 of 2 — Pick the videos to merge")
+        self.header.configure(text="Step 1 of 2 — Pick the videos to merge")
 
         if not self.ffmpeg:
-            messagebox.showerror(
-                "FFmpeg missing",
-                "FFmpeg is required for video metadata + thumbnails.",
-            )
+            messagebox.showerror("FFmpeg missing",
+                                  "FFmpeg is required for video metadata + thumbnails.")
 
-        # Toolbar above the gallery: Refresh + Add file
-        bar = ttk.Frame(self.body)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="🔄 Refresh", command=self._refresh_gallery).pack(side="left")
-        ttk.Button(bar, text="➕ Add file from elsewhere…", command=self._add_external_file).pack(side="left", padx=(8, 0))
-        self.gallery_summary = ttk.Label(bar, text="", foreground="#555")
+        # Toolbar
+        bar = ctk.CTkFrame(self.body, fg_color="transparent")
+        bar.pack(fill="x", pady=(0, 10))
+        ctk.CTkButton(bar, text="🔄  Refresh", command=self._refresh_gallery, width=110,
+                       fg_color=T["panel2"], hover_color=T["stroke"], text_color=T["text"],
+                       border_width=1, border_color=T["stroke"]).pack(side="left")
+        ctk.CTkButton(bar, text="➕  Add file from elsewhere…", command=self._add_external_file,
+                       width=210, fg_color=T["panel2"], hover_color=T["stroke"],
+                       text_color=T["text"], border_width=1, border_color=T["stroke"],
+                       ).pack(side="left", padx=(10, 0))
+        self.gallery_summary = ctk.CTkLabel(bar, text="", text_color=T["muted"],
+                                             font=ctk.CTkFont("Segoe UI", 11))
         self.gallery_summary.pack(side="right")
 
-        # Scrollable canvas for the thumbnail grid
-        canvas_holder = ttk.Frame(self.body)
+        # Scrollable gallery grid
+        canvas_holder = ctk.CTkFrame(self.body, fg_color="transparent")
         canvas_holder.pack(fill="both", expand=True)
-
-        self.gallery_canvas = tk.Canvas(canvas_holder, highlightthickness=0)
-        vsb = ttk.Scrollbar(canvas_holder, orient="vertical", command=self.gallery_canvas.yview)
-        self.gallery_canvas.configure(yscrollcommand=vsb.set)
-        self.gallery_canvas.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-
-        self.gallery_inner = ttk.Frame(self.gallery_canvas)
-        self.gallery_inner.bind(
-            "<Configure>",
-            lambda _e: self.gallery_canvas.configure(scrollregion=self.gallery_canvas.bbox("all")),
+        self.gallery_inner = ctk.CTkScrollableFrame(
+            canvas_holder, fg_color=T["bg"],
+            scrollbar_fg_color=T["panel"], scrollbar_button_color=T["stroke"],
+            scrollbar_button_hover_color=T["accent"],
         )
-        self.gallery_canvas.create_window((0, 0), window=self.gallery_inner, anchor="nw")
+        self.gallery_inner.pack(fill="both", expand=True)
 
-        # Mouse-wheel scroll inside the canvas
-        self.gallery_canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: self.gallery_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
-        )
-
-        # Footer: Continue
-        self.continue_btn = ttk.Button(
-            self.footer, text="Continue ▶", command=self._continue_to_reorder, width=18,
+        # Footer
+        self.continue_btn = ctk.CTkButton(
+            self.footer, text="Continue  ▶", command=self._continue_to_reorder, width=160,
+            fg_color=T["accent"], hover_color=hex_lerp(T["accent"], "#FFFFFF", 0.15),
+            text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 13, weight="bold"),
+            state="disabled",
         )
         self.continue_btn.pack(side="right")
-        ttk.Button(
-            self.footer, text="📂 Open workspace", command=lambda: open_in_default_player(HERE),
+        ctk.CTkButton(
+            self.footer, text="📂  Open workspace",
+            command=lambda: open_in_default_player(HERE), width=170,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
         ).pack(side="left")
-        self.selected_count_label = ttk.Label(self.footer, text="0 selected", foreground="#555")
-        self.selected_count_label.pack(side="right", padx=(0, 12))
+        self.selected_count_label = ctk.CTkLabel(
+            self.footer, text="0 selected", text_color=T["muted"],
+            font=ctk.CTkFont("Segoe UI", 11),
+        )
+        self.selected_count_label.pack(side="right", padx=(0, 14))
 
         self._refresh_gallery()
 
     def _refresh_gallery(self):
         self.videos = self._scan_workspace()
-        # Wipe the inner frame
         for child in self.gallery_inner.winfo_children():
             child.destroy()
 
         if not self.videos:
-            ttk.Label(
+            ctk.CTkLabel(
                 self.gallery_inner,
                 text="No video files found in the workspace yet.\nCreate one with the tone or legacy creator first.",
-                foreground="#888",
-                justify="center",
-            ).grid(row=0, column=0, padx=20, pady=40)
-            self.gallery_summary.config(text="0 videos")
+                text_color=self.T["muted"], font=ctk.CTkFont("Segoe UI", 13), justify="center",
+            ).grid(row=0, column=0, padx=20, pady=40, columnspan=GALLERY_COLS)
+            self.gallery_summary.configure(text="0 videos")
             self._update_continue_state()
             return
 
@@ -306,42 +321,52 @@ class VideoMergerApp:
             )
 
         total_size = sum(v["size"] for v in self.videos)
-        self.gallery_summary.config(text=f"{len(self.videos)} videos · {fmt_size(total_size)}")
+        self.gallery_summary.configure(text=f"{len(self.videos)} videos · {fmt_size(total_size)}")
         self._update_continue_state()
 
     def _build_gallery_card(self, parent, video):
-        card = ttk.Frame(parent, relief="solid", borderwidth=1, padding=6)
+        T = self.T
+        card = ctk.CTkFrame(parent, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
 
         thumb = self._get_thumb(video["path"])
-        thumb_label = tk.Label(card, image=thumb, cursor="hand2", bd=0)
-        thumb_label.image = thumb  # keep ref
-        thumb_label.pack()
+        thumb_label = tk.Label(card, image=thumb, cursor="hand2", bd=0, bg=T["panel"])
+        thumb_label.image = thumb
+        thumb_label.pack(padx=8, pady=(8, 4))
         thumb_label.bind("<Button-1>", lambda _e, p=video["path"]: open_in_default_player(p))
 
-        # Filename — truncate gently if too long
         name = video["name"]
-        if len(name) > 32:
-            name = name[:29] + "…"
-        ttk.Label(card, text=name, font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(4, 0))
-        ttk.Label(
+        if len(name) > 30:
+            name = name[:27] + "…"
+        ctk.CTkLabel(card, text=name, font=ctk.CTkFont("Segoe UI", 10, weight="bold"),
+                      text_color=T["text"], wraplength=196).pack(anchor="w", padx=8, pady=(0, 2))
+        ctk.CTkLabel(
             card,
-            text=f"{fmt_duration(video['duration'])} · {fmt_size(video['size'])}",
-            foreground="#666",
-        ).pack(anchor="w")
-
-        ttk.Checkbutton(
+            text=f"{fmt_duration(video['duration'])}  ·  {fmt_size(video['size'])}",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 10),
+        ).pack(anchor="w", padx=8)
+        ctk.CTkCheckBox(
             card, text="Add to merge", variable=video["selected"],
             command=self._update_continue_state,
-        ).pack(anchor="w", pady=(4, 0))
+            text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+            font=ctk.CTkFont("Segoe UI", 11),
+        ).pack(anchor="w", padx=8, pady=(6, 10))
         return card
 
     def _update_continue_state(self):
+        T = self.T
         n = sum(1 for v in self.videos if v["selected"].get())
-        self.selected_count_label.config(text=f"{n} selected")
+        self.selected_count_label.configure(text=f"{n} selected")
         if n >= 2:
-            self.continue_btn.config(state="normal")
+            self.continue_btn.configure(
+                state="normal", fg_color=T["accent"],
+                text_color="#FFFFFF",
+            )
         else:
-            self.continue_btn.config(state="disabled")
+            self.continue_btn.configure(
+                state="disabled", fg_color=T["panel2"],
+                text_color=T["muted"],
+            )
 
     def _add_external_file(self):
         f = filedialog.askopenfilename(
@@ -351,20 +376,16 @@ class VideoMergerApp:
         )
         if not f:
             return
-        # Copy/symlink not needed — we can reference the file in place.
         p = Path(f)
         try:
             size = p.stat().st_size
         except OSError:
             return
         self.videos.append({
-            "path": p,
-            "name": p.name,
-            "size": size,
+            "path": p, "name": p.name, "size": size,
             "duration": get_video_duration_s(self.ffprobe, p),
             "selected": tk.BooleanVar(value=True),
         })
-        # Re-render the grid so the new card shows up + checkbox state updates
         for child in self.gallery_inner.winfo_children():
             child.destroy()
         for i, v in enumerate(self.videos):
@@ -372,7 +393,7 @@ class VideoMergerApp:
             self._build_gallery_card(self.gallery_inner, v).grid(
                 row=r, column=c, padx=8, pady=8, sticky="nw",
             )
-        self.gallery_summary.config(
+        self.gallery_summary.configure(
             text=f"{len(self.videos)} videos · {fmt_size(sum(v['size'] for v in self.videos))}"
         )
         self._update_continue_state()
@@ -387,68 +408,85 @@ class VideoMergerApp:
 
     # ---------- Step 2: Reorder ----------
     def _show_reorder(self):
+        T = self.T
         self._clear_body()
-        self.header.config(text="Step 2 of 2 — Drag the videos into the order you want")
+        self.header.configure(text="Step 2 of 2 — Drag the videos into the order you want")
 
-        intro = ttk.Label(
+        ctk.CTkLabel(
             self.body,
-            text=(
-                "Top of the list plays first, bottom plays last. "
-                "Drag a row to reorder, or use the ▲ ▼ buttons. ✕ removes a row."
-            ),
-            foreground="#555",
-            wraplength=820,
-        )
-        intro.pack(anchor="w", pady=(0, 8))
+            text="Top plays first, bottom plays last.  Drag a row to reorder, or use ▲ ▼ buttons.  ✕ removes a row.",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 12), wraplength=820, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
 
-        # Listbox + scrollbar + side buttons
-        body = ttk.Frame(self.body)
+        # Listbox + side buttons
+        body = ctk.CTkFrame(self.body, fg_color="transparent")
         body.pack(fill="both", expand=True)
 
-        list_frame = ttk.Frame(body)
-        list_frame.pack(side="left", fill="both", expand=True)
-
+        list_wrap = ctk.CTkFrame(body, fg_color=T["panel"], corner_radius=12,
+                                  border_width=1, border_color=T["stroke"])
+        list_wrap.pack(side="left", fill="both", expand=True)
         self.reorder_list = tk.Listbox(
-            list_frame, font=("Segoe UI", 10), activestyle="dotbox", selectmode="single",
+            list_wrap, font=("Segoe UI", 11), activestyle="none", selectmode="single",
+            bg=T["panel2"], fg=T["text"],
+            selectbackground=T["accent"], selectforeground="#FFFFFF",
+            relief="flat", borderwidth=0,
+            highlightthickness=1, highlightcolor=T["stroke"], highlightbackground=T["panel"],
         )
-        self.reorder_list.pack(side="left", fill="both", expand=True)
-        rsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.reorder_list.yview)
-        rsb.pack(side="right", fill="y")
-        self.reorder_list.config(yscrollcommand=rsb.set)
+        self.reorder_list.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+        rsb = ctk.CTkScrollbar(list_wrap, orientation="vertical",
+                                command=self.reorder_list.yview,
+                                fg_color=T["panel"], button_color=T["stroke"],
+                                button_hover_color=T["accent"])
+        rsb.pack(side="right", fill="y", pady=8)
+        self.reorder_list.configure(yscrollcommand=rsb.set)
 
-        # Drag-to-reorder: press, drag, release.
         self.reorder_list.bind("<Button-1>", self._drag_start)
         self.reorder_list.bind("<B1-Motion>", self._drag_motion)
         self.reorder_list.bind("<ButtonRelease-1>", self._drag_end)
-        # Double-click previews the video.
         self.reorder_list.bind("<Double-Button-1>", self._preview_selected)
 
-        side = ttk.Frame(body, padding=(10, 0, 0, 0))
-        side.pack(side="right", fill="y")
-        ttk.Button(side, text="▲ Up", command=lambda: self._move_selected(-1), width=10).pack(pady=2)
-        ttk.Button(side, text="▼ Down", command=lambda: self._move_selected(1), width=10).pack(pady=2)
-        ttk.Button(side, text="✕ Remove", command=self._remove_selected, width=10).pack(pady=2)
-        ttk.Button(side, text="▶ Preview", command=self._preview_selected, width=10).pack(pady=2)
+        side = ctk.CTkFrame(body, fg_color="transparent")
+        side.pack(side="right", fill="y", padx=(12, 0))
+        _btn = dict(width=110, fg_color=T["panel2"], hover_color=T["stroke"],
+                    text_color=T["text"], border_width=1, border_color=T["stroke"])
+        ctk.CTkButton(side, text="▲  Up", command=lambda: self._move_selected(-1), **_btn).pack(pady=3)
+        ctk.CTkButton(side, text="▼  Down", command=lambda: self._move_selected(1), **_btn).pack(pady=3)
+        ctk.CTkButton(side, text="✕  Remove", command=self._remove_selected,
+                       **{**_btn, "hover_color": T["danger"]}).pack(pady=3)
+        ctk.CTkButton(side, text="▶  Preview", command=self._preview_selected, **_btn).pack(pady=3)
 
         # Output settings
-        settings = ttk.LabelFrame(self.body, text="Output settings", padding=10)
-        settings.pack(fill="x", pady=(8, 0))
-        ttk.Label(settings, text="Output quality:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Combobox(
-            settings, textvariable=self.resolution_var, state="readonly",
+        sec_out = ctk.CTkFrame(self.body, fg_color=T["panel"], corner_radius=12,
+                                border_width=1, border_color=T["stroke"])
+        sec_out.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(sec_out, text="Output settings",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        so_inner = ctk.CTkFrame(sec_out, fg_color="transparent")
+        so_inner.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkLabel(so_inner, text="Output quality:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).pack(side="left", padx=(0, 10))
+        ctk.CTkComboBox(
+            so_inner, variable=self.resolution_var, state="readonly",
             values=[f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items()],
-            width=22,
-        ).grid(row=0, column=1, sticky="w")
-        ttk.Label(
-            settings,
-            text="(All inputs will be scaled & padded to fit this resolution)",
-            foreground="#666",
-        ).grid(row=0, column=2, sticky="w", padx=(12, 0))
+            width=240, fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+            button_color=T["stroke"], button_hover_color=T["accent"],
+            dropdown_fg_color=T["panel2"], dropdown_text_color=T["text"],
+            dropdown_hover_color=T["accent"],
+        ).pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(so_inner, text="(All inputs will be scaled & padded to fit)",
+                      text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11)).pack(side="left")
 
         # Footer
-        ttk.Button(self.footer, text="◀ Back", command=self._show_gallery).pack(side="left")
-        ttk.Button(
-            self.footer, text="Merge ▶", command=self._start_render, width=18,
+        ctk.CTkButton(
+            self.footer, text="◀  Back", command=self._show_gallery, width=110,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        ).pack(side="left")
+        ctk.CTkButton(
+            self.footer, text="Merge  ▶", command=self._start_render, width=150,
+            fg_color=T["accent"], hover_color=hex_lerp(T["accent"], "#FFFFFF", 0.15),
+            text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 13, weight="bold"),
         ).pack(side="right")
 
         self._refresh_reorder_list()
@@ -530,39 +568,67 @@ class VideoMergerApp:
         threading.Thread(target=self._render_thread, daemon=True).start()
 
     def _show_render_screen(self):
+        T = self.T
         self._clear_body()
-        self.header.config(text="Merging videos…")
+        self.header.configure(text="Merging videos…")
 
-        info = ttk.Label(
+        ctk.CTkLabel(
             self.body,
-            text=f"Merging {len(self.ordered_paths)} videos into one. This re-encodes everything, so it can take a few minutes.",
-            foreground="#555",
-            wraplength=820,
-        )
-        info.pack(anchor="w", pady=(0, 8))
+            text=f"Merging {len(self.ordered_paths)} videos into one. This re-encodes everything — may take a few minutes.",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 12), wraplength=840, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
 
         # Order summary
-        order_box = ttk.LabelFrame(self.body, text="Order", padding=8)
-        order_box.pack(fill="x", pady=(0, 8))
+        order_sec = ctk.CTkFrame(self.body, fg_color=T["panel"], corner_radius=12,
+                                  border_width=1, border_color=T["stroke"])
+        order_sec.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(order_sec, text="Order",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
         for i, p in enumerate(self.ordered_paths, start=1):
-            ttk.Label(order_box, text=f"{i:>2}.  {Path(p).name}").pack(anchor="w")
+            ctk.CTkLabel(order_sec, text=f"  {i:>2}.   {Path(p).name}",
+                          text_color=T["text"], font=ctk.CTkFont("Segoe UI", 11),
+                          anchor="w").pack(anchor="w", padx=14)
+        ctk.CTkFrame(order_sec, fg_color="transparent", height=8).pack()
 
-        # Progress + log
-        prog_frame = ttk.LabelFrame(self.body, text="Progress", padding=8)
-        prog_frame.pack(fill="x", pady=(0, 8))
-        prog_frame.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(prog_frame, mode="indeterminate")
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.progress.start(15)
-        self.status_label = ttk.Label(prog_frame, text="Starting…", foreground="#555")
-        self.status_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        # Progress
+        prog_sec = ctk.CTkFrame(self.body, fg_color=T["panel"], corner_radius=12,
+                                 border_width=1, border_color=T["stroke"])
+        prog_sec.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(prog_sec, text="Progress",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        p_inner = ctk.CTkFrame(prog_sec, fg_color="transparent")
+        p_inner.pack(fill="x", padx=12, pady=(0, 12))
+        self.progress = ctk.CTkProgressBar(
+            p_inner, progress_color=T["accent"], fg_color=T["panel2"], height=14, corner_radius=7,
+        )
+        self.progress.set(0.15)
+        self.progress.pack(fill="x", pady=(0, 6))
+        self.status_label = ctk.CTkLabel(
+            p_inner, text="Starting…", text_color=T["muted"],
+            font=ctk.CTkFont("Segoe UI", 11), anchor="w",
+        )
+        self.status_label.pack(anchor="w")
 
-        log_frame = ttk.LabelFrame(self.body, text="Log", padding=4)
-        log_frame.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_frame, height=10, wrap="word", font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
+        # Log
+        log_sec = ctk.CTkFrame(self.body, fg_color=T["panel"], corner_radius=12,
+                                border_width=1, border_color=T["stroke"])
+        log_sec.pack(fill="both", expand=True)
+        ctk.CTkLabel(log_sec, text="Log",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        self.log_text = ctk.CTkTextbox(
+            log_sec, font=ctk.CTkFont("Consolas", 10),
+            fg_color=T["panel2"], text_color=T["text"], wrap="word", corner_radius=8,
+        )
+        self.log_text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        ttk.Button(self.footer, text="Close", command=self._on_close).pack(side="right")
+        ctk.CTkButton(
+            self.footer, text="Close", command=self._on_close, width=110,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        ).pack(side="right")
 
     def _log(self, message):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -575,6 +641,8 @@ class VideoMergerApp:
                 if hasattr(self, "log_text") and self.log_text.winfo_exists():
                     self.log_text.insert("end", msg + "\n")
                     self.log_text.see("end")
+                    if hasattr(self, "status_label") and self.status_label.winfo_exists():
+                        self.status_label.configure(text=msg.split("] ", 1)[-1][:80])
         except queue.Empty:
             pass
         self.root.after(100, self._poll_log)
@@ -647,32 +715,31 @@ class VideoMergerApp:
 
     def _render_done(self, out_path):
         self.is_rendering = False
-        try:
-            self.progress.stop()
-        except Exception:
-            pass
         if out_path and Path(out_path).exists():
             size_mb = Path(out_path).stat().st_size / (1024 * 1024)
-            self.status_label.config(text=f"Done → {out_path.name} ({size_mb:.1f} MB)")
-            self.progress["mode"] = "determinate"
-            self.progress["value"] = 100
+            try:
+                self.status_label.configure(text=f"Done → {out_path.name} ({size_mb:.1f} MB)")
+                self.progress.set(1.0)
+                self.progress.configure(progress_color=self.T["ok"])
+            except Exception:
+                pass
             messagebox.showinfo(
                 "Merge complete",
                 f"Saved to:\n{out_path}\n\nClick OK to keep the merger open, or close the window.",
             )
         else:
-            self.status_label.config(text="Failed — see log")
+            try:
+                self.status_label.configure(text="Failed — see log")
+                self.progress.configure(progress_color=self.T["danger"])
+            except Exception:
+                pass
             messagebox.showerror("Merge failed", "Could not produce a merged file. Check the log for details.")
 
 
 def main():
-    root = tk.Tk()
-    try:
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     VideoMergerApp(root)
     root.lift()
     root.attributes("-topmost", True)

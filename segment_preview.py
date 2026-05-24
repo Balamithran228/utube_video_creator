@@ -68,6 +68,12 @@ THEMES = {
         "accent3": "#F472B6",    # pink
         "danger": "#F43F5E",
         "ok": "#34D399",
+        # waveform canvas colours (required by WaveformCanvas from voice_editor)
+        "wave_top": "#A78BFA",
+        "wave_mid": "#7C5CFF",
+        "wave_bot": "#22D3EE",
+        "cursor": "#22D3EE",
+        "grid": "#2C3145",
     },
     "light": {
         "appearance": "light",
@@ -82,6 +88,12 @@ THEMES = {
         "accent3": "#DB2777",
         "danger": "#E11D48",
         "ok": "#059669",
+        # waveform canvas colours
+        "wave_top": "#9F7BFF",
+        "wave_mid": "#6D4AFF",
+        "wave_bot": "#0891B2",
+        "cursor": "#0891B2",
+        "grid": "#D9DDEA",
     },
 }
 
@@ -679,7 +691,7 @@ class SegmentAudioPlayer(ctk.CTkFrame):
                 channels=channels,
                 callback=self._sd_callback,
                 dtype="float32",
-                blocksize=1024,
+                blocksize=4096,
                 finished_callback=self._on_stream_finished,
             )
             self.stream.start()
@@ -1026,8 +1038,8 @@ class SegmentEditorModal(ctk.CTkToplevel):
         self.project = Project(source_path=Path(audio_path), samples=samples, sample_rate=sr)
         self.player = Player()
         self.player.load(samples, sr)
-        self.player.on_position = lambda s: self.after(0, lambda s=s: self._on_player_pos_ui(s))
         self.player.on_finished = lambda: self.after(0, self._on_player_finished_ui)
+        self._playhead_after_id = None
         self.preview_cuts_var = ctk.BooleanVar(value=True)
 
         self._build_ui(segment_label)
@@ -1203,6 +1215,7 @@ class SegmentEditorModal(ctk.CTkToplevel):
     def _toggle_play(self):
         if self.player.is_playing:
             self.player.pause()
+            self._cancel_playhead_poll()
             self.play_btn.configure(text="▶  Play")
         else:
             self._sync_player_skips()
@@ -1210,23 +1223,45 @@ class SegmentEditorModal(ctk.CTkToplevel):
             if self.player.position >= len(self.player.samples):
                 from_s = 0.0
             self.player.play(from_s)
-            self.play_btn.configure(text="⏸  Pause")
+            if self.player.is_playing:
+                self._start_playhead_poll()
+                self.play_btn.configure(text="⏸  Pause")
 
     def _stop_play(self):
         self.player.stop()
+        self._cancel_playhead_poll()
         self.play_btn.configure(text="▶  Play")
         self.canvas.set_cursor(0.0)
 
-    def _on_player_pos_ui(self, s: float):
+    def _start_playhead_poll(self):
+        self._cancel_playhead_poll()
+        self._poll_playhead()
+
+    def _cancel_playhead_poll(self):
+        if self._playhead_after_id is not None:
+            try:
+                self.after_cancel(self._playhead_after_id)
+            except Exception:
+                pass
+            self._playhead_after_id = None
+
+    def _poll_playhead(self):
         if self._closed:
+            self._playhead_after_id = None
             return
-        self.canvas.set_cursor(s)
+        self.canvas.move_cursor_only(self.player._pos_seconds)
+        if self.player.is_playing:
+            self._playhead_after_id = self.after(40, self._poll_playhead)
+        else:
+            self._playhead_after_id = None
 
     def _on_player_finished_ui(self):
+        self._cancel_playhead_poll()
         if self._closed:
             return
         self.play_btn.configure(text="▶  Play")
         self.player.position = 0
+        self.player._pos_seconds = 0.0
         self.canvas.set_cursor(0.0)
 
     def _on_seek(self, s: float):

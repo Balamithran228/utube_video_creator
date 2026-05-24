@@ -59,7 +59,9 @@ from pathlib import Path
 import numpy as np
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 # Reuse helpers from the main script (ffmpeg discovery, render+concat, etc.)
 HERE = Path(__file__).resolve().parent
@@ -77,6 +79,29 @@ from simple_video_creator import (  # noqa: E402
     find_ffmpeg,
 )
 from pydub.silence import detect_nonsilent
+
+THEMES = {
+    "dark": {
+        "bg": "#0F1117", "panel": "#181B25", "panel2": "#222637",
+        "stroke": "#2C3145", "text": "#F5F7FA", "muted": "#8B92A6",
+        "accent": "#7C5CFF", "accent2": "#22D3EE", "accent3": "#F472B6",
+        "danger": "#F43F5E", "ok": "#34D399",
+    },
+    "light": {
+        "bg": "#F5F6FB", "panel": "#FFFFFF", "panel2": "#EEF0F8",
+        "stroke": "#D9DDEA", "text": "#0F1117", "muted": "#5C6478",
+        "accent": "#6D4AFF", "accent2": "#0891B2", "accent3": "#DB2777",
+        "danger": "#E11D48", "ok": "#059669",
+    },
+}
+
+
+def hex_lerp(c1: str, c2: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
+
 
 WORKSPACE = HERE
 DEFAULT_IMAGES = WORKSPACE / "section-20260502-235344"
@@ -852,15 +877,15 @@ class ToneVideoApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Tone Video Creator (Approach 2)")
-        # Default size adapts to the screen — full content needs ~960 px tall.
-        # Cap at 92% of screen height so the title bar / taskbar stay visible.
+        self.T = THEMES["dark"]
+        self.root.configure(fg_color=self.T["bg"])
         try:
             screen_h = root.winfo_screenheight()
         except Exception:
             screen_h = 1080
         default_h = min(980, max(720, int(screen_h * 0.92) - 40))
-        self.root.geometry(f"840x{default_h}")
-        self.root.minsize(780, 600)
+        self.root.geometry(f"880x{default_h}")
+        self.root.minsize(800, 620)
 
         # Pipeline inputs
         self.images_dir = tk.StringVar(value=str(DEFAULT_IMAGES) if DEFAULT_IMAGES.is_dir() else "")
@@ -917,189 +942,258 @@ class ToneVideoApp:
 
     # ---------- UI ----------
     def _build_ui(self):
-        outer = ttk.Frame(self.root, padding=12)
-        outer.pack(fill="both", expand=True)
+        T = self.T
+        outer = ctk.CTkFrame(self.root, fg_color=T["bg"])
+        outer.pack(fill="both", expand=True, padx=14, pady=14)
 
         # ───────── Bottom-anchored action area ─────────
-        # Convert / Progress / Log are packed FIRST with side="bottom" so
-        # they're always visible regardless of window height. Pack order
-        # with side="bottom" stacks bottom-up, so the visual order from
-        # top to bottom becomes: btn_row, prog, log_frame.
+        # Log / Progress / Buttons are packed side="bottom" first so they
+        # are always visible regardless of form scroll position.
 
-        log_frame = ttk.LabelFrame(outer, text="Log", padding=8)
-        log_frame.pack(side="bottom", fill="x", expand=False)
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap="word", font=("Consolas", 9))
-        self.log_text.pack(fill="both", expand=True)
+        sec_log = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                                border_width=1, border_color=T["stroke"])
+        sec_log.pack(side="bottom", fill="x", pady=(8, 0))
+        ctk.CTkLabel(sec_log, text="Log",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        self.log_text = ctk.CTkTextbox(
+            sec_log, height=140, font=ctk.CTkFont("Consolas", 10),
+            fg_color=T["panel2"], text_color=T["text"], wrap="word", corner_radius=8,
+        )
+        self.log_text.pack(fill="x", padx=12, pady=(0, 12))
 
-        prog = ttk.LabelFrame(outer, text="Progress", padding=10)
-        prog.pack(side="bottom", fill="x", pady=(0, 8))
-        prog.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(prog, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.percent_label = ttk.Label(prog, text="0%", width=6, anchor="e")
-        self.percent_label.grid(row=0, column=1, padx=(8, 0))
-        self.status_label = ttk.Label(prog, text="Idle", foreground="#555")
-        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        sec_prog = ctk.CTkFrame(outer, fg_color=T["panel"], corner_radius=12,
+                                 border_width=1, border_color=T["stroke"])
+        sec_prog.pack(side="bottom", fill="x", pady=(8, 0))
+        ctk.CTkLabel(sec_prog, text="Progress",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        p_inner = ctk.CTkFrame(sec_prog, fg_color="transparent")
+        p_inner.pack(fill="x", padx=12, pady=(0, 12))
+        p_row = ctk.CTkFrame(p_inner, fg_color="transparent")
+        p_row.pack(fill="x")
+        p_row.columnconfigure(0, weight=1)
+        self.progress = ctk.CTkProgressBar(
+            p_row, progress_color=T["accent"], fg_color=T["panel2"], height=14, corner_radius=7,
+        )
+        self.progress.set(0)
+        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.percent_label = ctk.CTkLabel(
+            p_row, text="0%", width=50, anchor="e",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
+        )
+        self.percent_label.grid(row=0, column=1)
+        self.status_label = ctk.CTkLabel(
+            p_inner, text="Idle", text_color=T["muted"],
+            font=ctk.CTkFont("Segoe UI", 11), anchor="w",
+        )
+        self.status_label.pack(anchor="w", pady=(6, 0))
 
-        btn_row = ttk.Frame(outer)
+        btn_row = ctk.CTkFrame(outer, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", pady=(0, 8))
-        self.convert_btn = ttk.Button(btn_row, text="▶  Convert", command=self._start, width=18)
+        self.convert_btn = ctk.CTkButton(
+            btn_row, text="▶   Convert", command=self._start, width=160,
+            fg_color=T["accent"], hover_color=hex_lerp(T["accent"], "#FFFFFF", 0.15),
+            text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 13, weight="bold"),
+        )
         self.convert_btn.pack(side="left")
-        self.open_btn = ttk.Button(btn_row, text="📂 Open workspace", command=self._open_workspace)
-        self.open_btn.pack(side="right")
+        ctk.CTkButton(
+            btn_row, text="📂  Open workspace", command=self._open_workspace, width=170,
+            fg_color=T["panel2"], hover_color=T["stroke"],
+            text_color=T["text"], border_width=1, border_color=T["stroke"],
+        ).pack(side="right")
 
         # ───────── Scrollable form (sections 1–6) ─────────
-        # The form is taller than most windows can fit, so it lives
-        # inside a Canvas with a vertical scrollbar. The scrollbar shows
-        # when the form overflows; mouse wheel works while the cursor is
-        # over the form area.
-
-        form_wrap = ttk.Frame(outer)
-        form_wrap.pack(side="top", fill="both", expand=True)
-        form_wrap.rowconfigure(0, weight=1)
-        form_wrap.columnconfigure(0, weight=1)
-
-        canvas = tk.Canvas(form_wrap, highlightthickness=0, borderwidth=0)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        vsb = ttk.Scrollbar(form_wrap, orient="vertical", command=canvas.yview)
-        vsb.grid(row=0, column=1, sticky="ns")
-        canvas.configure(yscrollcommand=vsb.set)
-
-        form = ttk.Frame(canvas)
-        form_id = canvas.create_window((0, 0), window=form, anchor="nw")
-
-        def _on_form_resize(_e):
-            # Tell canvas the full scrollable region matches the form's reqsize
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        form.bind("<Configure>", _on_form_resize)
-
-        def _on_canvas_resize(e):
-            # Stretch inner form to canvas width so widgets fill horizontally
-            canvas.itemconfigure(form_id, width=e.width)
-        canvas.bind("<Configure>", _on_canvas_resize)
-
-        # Mouse wheel — bind globally only while pointer is over the canvas
-        def _on_mousewheel(e):
-            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _bind_wheel(_e):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        def _unbind_wheel(_e):
-            canvas.unbind_all("<MouseWheel>")
-        canvas.bind("<Enter>", _bind_wheel)
-        canvas.bind("<Leave>", _unbind_wheel)
+        form = ctk.CTkScrollableFrame(
+            outer, fg_color=T["bg"],
+            scrollbar_fg_color=T["panel"],
+            scrollbar_button_color=T["stroke"],
+            scrollbar_button_hover_color=T["accent"],
+        )
+        form.pack(side="top", fill="both", expand=True, pady=(0, 8))
 
         # 1. Files
-        src = ttk.LabelFrame(form, text="1. Pick your files", padding=10)
-        src.pack(fill="x", pady=(0, 8))
+        sec1 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec1.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec1, text="1.  Pick your files",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        src = ctk.CTkFrame(sec1, fg_color="transparent")
+        src.pack(fill="x", padx=12, pady=(0, 12))
         src.columnconfigure(1, weight=1)
-        ttk.Label(src, text="Images folder:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        ttk.Entry(src, textvariable=self.images_dir).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
-        ttk.Button(src, text="Browse…", command=self._browse_images).grid(row=0, column=2, padx=4, pady=4)
-        ttk.Label(src, text="Voice file:").grid(row=1, column=0, sticky="w", padx=4, pady=4)
-        ttk.Entry(src, textvariable=self.audio_file).grid(row=1, column=1, sticky="ew", padx=4, pady=4)
-        ttk.Button(src, text="Browse…", command=self._browse_audio).grid(row=1, column=2, padx=4, pady=4)
+        ctk.CTkLabel(src, text="Images folder:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ctk.CTkEntry(src, textvariable=self.images_dir, placeholder_text="Pick a folder of images…",
+                      fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                      placeholder_text_color=T["muted"]).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=4)
+        ctk.CTkButton(src, text="Browse…", command=self._browse_images, width=90,
+                       fg_color=T["panel2"], hover_color=T["stroke"], text_color=T["text"],
+                       border_width=1, border_color=T["stroke"]).grid(row=0, column=2, pady=4)
+        ctk.CTkLabel(src, text="Voice file:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ctk.CTkEntry(src, textvariable=self.audio_file, placeholder_text="Pick a voice recording…",
+                      fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                      placeholder_text_color=T["muted"]).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        ctk.CTkButton(src, text="Browse…", command=self._browse_audio, width=90,
+                       fg_color=T["panel2"], hover_color=T["stroke"], text_color=T["text"],
+                       border_width=1, border_color=T["stroke"]).grid(row=1, column=2, pady=4)
 
         # 2. Mode
-        mode = ttk.LabelFrame(form, text="2. Recording mode", padding=10)
-        mode.pack(fill="x", pady=(0, 8))
-        ttk.Radiobutton(
-            mode,
+        sec2 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec2.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec2, text="2.  Recording mode",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        mode_inner = ctk.CTkFrame(sec2, fg_color="transparent")
+        mode_inner.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkRadioButton(
+            mode_inner,
             text="Mode 1 — Audio starts WITH a tone   (N tones → N segments)",
             variable=self.mode_var, value=1,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            mode,
+            text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+            font=ctk.CTkFont("Segoe UI", 12),
+        ).pack(anchor="w", pady=4)
+        ctk.CTkRadioButton(
+            mode_inner,
             text="Mode 2 — Audio bookended with TALKING, tones in between   (N tones → N+1 segments)",
             variable=self.mode_var, value=2,
-        ).pack(anchor="w")
+            text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+            font=ctk.CTkFont("Segoe UI", 12),
+        ).pack(anchor="w", pady=4)
 
-        # 3. Tone tuning (collapsed-feeling, single row)
-        tune = ttk.LabelFrame(form, text="3. Tone tuning (defaults are good)", padding=10)
-        tune.pack(fill="x", pady=(0, 8))
-        ttk.Label(tune, text="Frequency (Hz):").grid(row=0, column=0, sticky="w", padx=(0, 4))
-        ttk.Spinbox(tune, from_=200, to=4000, increment=10, textvariable=self.freq_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
-        ttk.Label(tune, text="Threshold (0–1):").grid(row=0, column=2, sticky="w", padx=(0, 4))
-        ttk.Spinbox(tune, from_=0.05, to=0.95, increment=0.05, textvariable=self.threshold_var, width=8, format="%.2f").grid(row=0, column=3, sticky="w")
+        # 3. Tone tuning
+        sec3 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec3.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec3, text="3.  Tone tuning  (defaults are good)",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        tune = ctk.CTkFrame(sec3, fg_color="transparent")
+        tune.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkLabel(tune, text="Frequency (Hz):", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ctk.CTkEntry(tune, textvariable=self.freq_var, width=90,
+                      fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                      ).grid(row=0, column=1, sticky="w", padx=(0, 20))
+        ctk.CTkLabel(tune, text="Threshold (0 – 1):", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ctk.CTkEntry(tune, textvariable=self.threshold_var, width=90,
+                      fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                      ).grid(row=0, column=3, sticky="w")
 
-        # 4. Audio + output settings (voice boost slider, resolution dropdown)
-        audio_out = ttk.LabelFrame(form, text="4. Audio & output", padding=10)
-        audio_out.pack(fill="x", pady=(0, 8))
-        audio_out.columnconfigure(1, weight=1)
+        # 4. Audio & output
+        sec4 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec4.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec4, text="4.  Audio & output",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        ao = ctk.CTkFrame(sec4, fg_color="transparent")
+        ao.pack(fill="x", padx=12, pady=(0, 12))
+        ao.columnconfigure(1, weight=1)
 
-        ttk.Label(audio_out, text="Voice boost:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        boost_scale = ttk.Scale(
-            audio_out, from_=0, to=100, orient="horizontal",
+        ctk.CTkLabel(ao, text="Voice boost:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ctk.CTkSlider(
+            ao, from_=0, to=100, number_of_steps=100,
             variable=self.volume_boost_var,
             command=lambda _v: self._update_boost_label(),
+            progress_color=T["accent"], fg_color=T["panel2"],
+            button_color=T["accent"], button_hover_color=T["accent2"],
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.boost_label = ctk.CTkLabel(
+            ao, text="0% (no change)", width=170, anchor="w",
+            text_color=T["muted"], font=ctk.CTkFont("Segoe UI", 11),
         )
-        boost_scale.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        self.boost_label = ttk.Label(audio_out, text="0% (no change)", width=20, anchor="w")
         self.boost_label.grid(row=0, column=2, sticky="w")
 
-        ttk.Label(audio_out, text="Output quality:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        quality_combo = ttk.Combobox(
-            audio_out, textvariable=self.resolution_var, state="readonly",
-            values=[
-                f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items()
-            ],
-            width=22,
-        )
-        # Default selection — match DEFAULT_RESOLUTION_KEY
+        ctk.CTkLabel(ao, text="Output quality:", text_color=T["text"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(10, 0))
         default_label = next(
             (f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items() if k == DEFAULT_RESOLUTION_KEY),
             "1080p (1920×1080)",
         )
         self.resolution_var.set(default_label)
-        quality_combo.grid(row=1, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        ctk.CTkComboBox(
+            ao, variable=self.resolution_var, state="readonly",
+            values=[f"{k} ({w}×{h})" for k, (w, h) in RESOLUTION_PRESETS.items()],
+            width=240,
+            fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+            button_color=T["stroke"], button_hover_color=T["accent"],
+            dropdown_fg_color=T["panel2"], dropdown_text_color=T["text"],
+            dropdown_hover_color=T["accent"],
+        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(10, 0))
 
         # 5. Text overlays
-        overlay = ttk.LabelFrame(form, text="5. Text overlays (tick to include)", padding=10)
-        overlay.pack(fill="x", pady=(0, 8))
-        overlay.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
-            overlay,
-            text="✓ Scrolling ticker at the bottom (right → left, looping)",
+        sec5 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec5.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec5, text="5.  Text overlays  (tick to include)",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        ov = ctk.CTkFrame(sec5, fg_color="transparent")
+        ov.pack(fill="x", padx=12, pady=(0, 12))
+        ov.columnconfigure(1, weight=1)
+        ctk.CTkCheckBox(
+            ov, text="Scrolling ticker at the bottom (right → left, looping)",
             variable=self.scroll_enabled,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(
-            overlay,
-            text="✓ Static text on the right side (vertically centred)",
+            text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+            font=ctk.CTkFont("Segoe UI", 12),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=3)
+        ctk.CTkCheckBox(
+            ov, text="Static text on the right side (vertically centred)",
             variable=self.side_enabled,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Label(overlay, text="Text:").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
-        ttk.Entry(overlay, textvariable=self.overlay_text).grid(row=2, column=1, sticky="ew", pady=(4, 0))
+            text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+            font=ctk.CTkFont("Segoe UI", 12),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
+        ctk.CTkLabel(ov, text="Text:", text_color=T["muted"],
+                      font=ctk.CTkFont("Segoe UI", 11)).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
+        ctk.CTkEntry(ov, textvariable=self.overlay_text,
+                      fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                      ).grid(row=2, column=1, sticky="ew", pady=(6, 0))
 
-        # 6. Extras — start image, end image, start video
-        extras = ttk.LabelFrame(form, text="6. Extras (tick to include)", padding=10)
-        extras.pack(fill="x", pady=(0, 8))
-        extras.columnconfigure(2, weight=1)
+        # 6. Extras
+        sec6 = ctk.CTkFrame(form, fg_color=T["panel"], corner_radius=12,
+                             border_width=1, border_color=T["stroke"])
+        sec6.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(sec6, text="6.  Extras  (tick to include)",
+                      font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                      text_color=T["accent"]).pack(anchor="w", padx=14, pady=(10, 4))
+        ex = ctk.CTkFrame(sec6, fg_color="transparent")
+        ex.pack(fill="x", padx=12, pady=(0, 12))
+        ex.columnconfigure(2, weight=1)
 
         def add_extra_row(row, label, var_enabled, var_path, browse_cmd):
-            ttk.Checkbutton(extras, text=label, variable=var_enabled).grid(
-                row=row, column=0, sticky="w", padx=(0, 8), pady=2,
-            )
-            ttk.Entry(extras, textvariable=var_path).grid(
-                row=row, column=1, columnspan=2, sticky="ew", padx=(0, 4), pady=2,
-            )
-            ttk.Button(extras, text="Browse…", command=browse_cmd).grid(
-                row=row, column=3, padx=(4, 0), pady=2,
-            )
+            ctk.CTkCheckBox(
+                ex, text=label, variable=var_enabled,
+                text_color=T["text"], fg_color=T["accent"], hover_color=T["accent2"],
+                font=ctk.CTkFont("Segoe UI", 12),
+            ).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
+            ctk.CTkEntry(
+                ex, textvariable=var_path,
+                fg_color=T["panel2"], border_color=T["stroke"], text_color=T["text"],
+                placeholder_text_color=T["muted"],
+            ).grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=3)
+            ctk.CTkButton(
+                ex, text="Browse…", command=browse_cmd, width=90,
+                fg_color=T["panel2"], hover_color=T["stroke"],
+                text_color=T["text"], border_width=1, border_color=T["stroke"],
+            ).grid(row=row, column=3, pady=3)
 
         add_extra_row(
-            0,
-            "Start video (plays first as intro)",
+            0, "Start video (plays first as intro)",
             self.start_video_enabled, self.start_video_path,
             lambda: self._browse_into(self.start_video_path, "Pick start video", VIDEO_EXTS, START_VIDEO_DIR),
         )
         add_extra_row(
-            1,
-            "Start image (maps to segment 1)",
+            1, "Start image (maps to segment 1)",
             self.start_image_enabled, self.start_image_path,
             lambda: self._browse_into(self.start_image_path, "Pick start image", IMG_EXTS, START_IMAGE_DIR),
         )
         add_extra_row(
-            2,
-            "End image (maps to last trailing segment)",
+            2, "End image (maps to last trailing segment)",
             self.end_image_enabled, self.end_image_path,
             lambda: self._browse_into(self.end_image_path, "Pick end image", IMG_EXTS, END_IMAGE_DIR),
         )
@@ -1147,7 +1241,6 @@ class ToneVideoApp:
                 msg = self.log_queue.get_nowait()
                 self.log_text.insert("end", msg + "\n")
                 self.log_text.see("end")
-                # Update progress bar based on stage tags in the message
                 self._maybe_update_progress(msg)
         except queue.Empty:
             pass
@@ -1171,10 +1264,10 @@ class ToneVideoApp:
 
     def _set_progress(self, pct, status=None):
         pct = max(0, min(100, int(pct)))
-        self.progress["value"] = pct
-        self.percent_label.config(text=f"{pct}%")
+        self.progress.set(pct / 100)
+        self.percent_label.configure(text=f"{pct}%")
         if status is not None:
-            self.status_label.config(text=status)
+            self.status_label.configure(text=status)
         self.root.update_idletasks()
 
     def _update_boost_label(self):
@@ -1210,8 +1303,8 @@ class ToneVideoApp:
                 return
 
         self.is_running = True
-        self.convert_btn.config(state="disabled")
-        self.log_text.delete("1.0", "end")
+        self.convert_btn.configure(state="disabled")
+        self.log_text.delete("0.0", "end")
         self._set_progress(0, "Starting…")
 
         scroll_text = self.overlay_text.get() if self.scroll_enabled.get() else None
@@ -1301,7 +1394,7 @@ class ToneVideoApp:
 
     def _finish(self, result, resolution=None):
         self.is_running = False
-        self.convert_btn.config(state="normal")
+        self.convert_btn.configure(state="normal")
         if result == "CANCELLED":
             self._set_progress(0, "Cancelled — no video produced")
         elif result:
@@ -1316,15 +1409,10 @@ class ToneVideoApp:
 
 
 def launch_gui():
-    root = tk.Tk()
-    try:
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-    except Exception:
-        pass
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     ToneVideoApp(root)
-    # Force window to the front on first launch (otherwise it can hide behind the IDE)
     root.lift()
     root.attributes("-topmost", True)
     root.after(500, lambda: root.attributes("-topmost", False))
