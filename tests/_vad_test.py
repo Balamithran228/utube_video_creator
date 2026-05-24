@@ -1,22 +1,24 @@
 """Diagnostic: run Silero VAD on the user's audio and report how many speech segments
 we'd get for different minimum-pause thresholds. Helps decide if existing audio is usable."""
 import sys
+from pathlib import Path
 import numpy as np
 import torch
-sys.path.insert(0, ".")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "video_toolkit"))
 from simple_video_creator import find_ffmpeg, configure_pydub
+from paths import SAMPLE_AUDIO_DIR
 configure_pydub(find_ffmpeg())
 
 from pydub import AudioSegment
 from silero_vad import load_silero_vad, get_speech_timestamps
 
 import os
-HERE = os.path.dirname(os.path.abspath(__file__))
 # Try the new audio first, fall back to the original sample
-for candidate in ["mk 1 enhanced-v2.mp3", "enhanced mp33.mp3"]:
-    path = os.path.join(HERE, candidate)
+for candidate in ["mkv2 -enhanced-v2.mp3", "mk 1 enhanced-v2.mp3", "enhanced mp33.mp3"]:
+    path = SAMPLE_AUDIO_DIR / candidate
     if os.path.isfile(path):
-        AUDIO = path
+        AUDIO = str(path)
         break
 else:
     raise SystemExit("No audio file found in workspace")

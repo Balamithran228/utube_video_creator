@@ -1,6 +1,6 @@
 # Approach 1 — Voice Activity Detection (VAD)
 
-> **Script:** [`simple_video_creator.py`](simple_video_creator.py) — run with `--vad`.
+> **Script:** `video_toolkit/simple_video_creator.py` — run with `--vad`.
 > **Easiest entry point:** [`launcher.py`](launcher.py) — the "Voice pauses (legacy)" card opens the silence-based GUI. For the proper VAD pipeline, run the script directly with `--vad`.
 
 The program splits your audio at every natural pause longer than a threshold using a small neural network (Silero VAD). No markers, no clapping, no special words. You just **record continuously and pause between segments**.
@@ -53,7 +53,7 @@ That's it. No tones, no claps, no spoken markers.
 ## Run it
 
 ```bash
-python simple_video_creator.py --vad --audio your_recording.mp3
+python video_toolkit/simple_video_creator.py --vad --audio your_recording.mp3
 ```
 
 ### Options
@@ -66,10 +66,10 @@ python simple_video_creator.py --vad --audio your_recording.mp3
 
 ### Tuning `--pause-ms`
 
-You can use the `_vad_test.py` diagnostic to see how many segments each threshold gives **without rendering**:
+You can use the `tests/_vad_test.py` diagnostic to see how many segments each threshold gives **without rendering**:
 
 ```bash
-python _vad_test.py
+python tests/_vad_test.py
 ```
 
 Output:

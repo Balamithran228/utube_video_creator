@@ -62,6 +62,26 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+try:
+    from .paths import (
+        DEFAULT_IMAGES,
+        END_IMAGE_DIR,
+        PROJECT_ROOT,
+        SAMPLE_AUDIO_DIR,
+        START_IMAGE_DIR,
+        START_VIDEO_DIR,
+        ensure_output_dir,
+    )
+except ImportError:
+    from paths import (
+        DEFAULT_IMAGES,
+        END_IMAGE_DIR,
+        PROJECT_ROOT,
+        SAMPLE_AUDIO_DIR,
+        START_IMAGE_DIR,
+        START_VIDEO_DIR,
+        ensure_output_dir,
+    )
 
 # Reuse helpers from the main script (ffmpeg discovery, render+concat, etc.)
 HERE = Path(__file__).resolve().parent
@@ -103,13 +123,7 @@ def hex_lerp(c1: str, c2: str, t: float) -> str:
     return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
 
 
-WORKSPACE = HERE
-DEFAULT_IMAGES = WORKSPACE / "section-20260502-235344"
-
-# Optional asset folders. Each holds at most one file picked up automatically.
-START_IMAGE_DIR = WORKSPACE / "start_image"
-START_VIDEO_DIR = WORKSPACE / "start_video"
-END_IMAGE_DIR = WORKSPACE / "end_image"
+WORKSPACE = PROJECT_ROOT
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 
@@ -811,10 +825,11 @@ def run_tone_pipeline(images_dir,
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     out_name = f"video_tone_{timestamp}.mp4"
-    out_path = WORKSPACE / out_name
+    output_dir = ensure_output_dir()
+    out_path = output_dir / out_name
 
     has_overlay = bool(scroll_text or side_text)
-    base_path = (WORKSPACE / f"_tonebase_{timestamp}.mp4") if has_overlay else out_path
+    base_path = (output_dir / f"_tonebase_{timestamp}.mp4") if has_overlay else out_path
 
     # If a start video was provided, re-encode it to match our target format and
     # prepend it to the concat list so it plays first.
@@ -932,7 +947,8 @@ class ToneVideoApp:
 
         # Auto-pick most recent audio in workspace if none chosen yet
         candidates = sorted(
-            [p for p in WORKSPACE.iterdir()
+            [p for folder in (SAMPLE_AUDIO_DIR, WORKSPACE) if folder.is_dir()
+             for p in folder.iterdir()
              if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg"}],
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
@@ -1491,7 +1507,9 @@ def main():
     if audio is None:
         # Auto-pick the most recently modified mp3/wav in workspace as a convenience
         candidates = sorted(
-            [p for p in WORKSPACE.iterdir() if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg"}],
+            [p for folder in (SAMPLE_AUDIO_DIR, WORKSPACE) if folder.is_dir()
+             for p in folder.iterdir()
+             if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".flac", ".ogg"}],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )

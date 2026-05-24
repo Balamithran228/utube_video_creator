@@ -32,11 +32,16 @@ from tkinter import messagebox, filedialog
 import customtkinter as ctk
 
 from PIL import Image, ImageTk
+try:
+    from .paths import OUTPUT_DIR, PROJECT_ROOT, ensure_output_dir
+except ImportError:
+    from paths import OUTPUT_DIR, PROJECT_ROOT, ensure_output_dir
 
 # Reuse helpers from the existing pipeline scripts
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from simple_video_creator import find_ffmpeg, configure_pydub, _safe_console  # noqa: E402
+WORKSPACE = PROJECT_ROOT
 
 # Same preset list as tone_video_creator so the look + feel stays consistent.
 RESOLUTION_PRESETS = {
@@ -183,7 +188,17 @@ class VideoMergerApp:
     def _scan_workspace(self):
         """Find every video file in the workspace and gather basic metadata."""
         videos = []
-        for p in sorted(HERE.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        scan_dirs = [OUTPUT_DIR, WORKSPACE]
+        seen = set()
+        candidates = []
+        for folder in scan_dirs:
+            if not folder.is_dir():
+                continue
+            for p in folder.iterdir():
+                if p not in seen:
+                    seen.add(p)
+                    candidates.append(p)
+        for p in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
                 continue
             try:
@@ -664,7 +679,7 @@ class VideoMergerApp:
         self._log(f"Target resolution: {out_w}x{out_h}")
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = HERE / f"merged_{timestamp}.mp4"
+        out_path = ensure_output_dir() / f"merged_{timestamp}.mp4"
 
         # Build a concat-filter command that scales/pads each input to a
         # common resolution and unifies framerate + audio params, then

@@ -1,7 +1,7 @@
 # Segment Preview & Editor
 
 A modal that opens between segmentation and final render in
-`tone_video_creator.py`. After clicking **Convert**, the user sees
+`video_toolkit/tone_video_creator.py`. After clicking **Convert**, the user sees
 every (image, audio) pair laid out as an arrow-connected card strip
 **[1] → [2] → … → [N]** and can verify, edit, replace, add to, or
 delete each one before committing to the slow MP4 encode.
@@ -37,7 +37,7 @@ and what the user can do to verify it from the GUI.
 ## Quick start
 
 ```bash
-py -3.10 tone_video_creator.py
+py -3.10 video_toolkit/tone_video_creator.py
 ```
 
 Pick an images folder + voice file → click **▶ Convert** → wait until the
@@ -694,4 +694,3 @@ import sys
 - **Test naming** — `_<feature>_test.py` (underscore prefix).
 - **Side-anchored action area** — the project pattern of
   `side="bottom"` for Convert / Progress / Log / Continue rows.
-

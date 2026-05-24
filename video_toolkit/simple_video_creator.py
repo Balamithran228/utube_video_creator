@@ -21,6 +21,10 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+try:
+    from .paths import DEFAULT_IMAGES, PROJECT_ROOT, ensure_output_dir, first_existing_audio
+except ImportError:
+    from paths import DEFAULT_IMAGES, PROJECT_ROOT, ensure_output_dir, first_existing_audio
 
 try:
     from pydub import AudioSegment
@@ -55,11 +59,8 @@ def hex_lerp(c1: str, c2: str, t: float) -> str:
     return f"#{int(r1+(r2-r1)*t):02x}{int(g1+(g2-g1)*t):02x}{int(b1+(b2-b1)*t):02x}"
 
 
-WORKSPACE = Path(__file__).resolve().parent
-DEFAULT_IMAGES = WORKSPACE / "section-20260502-235344"
-DEFAULT_AUDIO = WORKSPACE / "mk 1 enhanced-v2.mp3"
-if not DEFAULT_AUDIO.exists():
-    DEFAULT_AUDIO = WORKSPACE / "enhanced mp33.mp3"
+WORKSPACE = PROJECT_ROOT
+DEFAULT_AUDIO = first_existing_audio()
 
 VIDEO_W = 1920
 VIDEO_H = 1080
@@ -317,7 +318,7 @@ class VideoCreator:
                        ).grid(row=1, column=2, pady=4)
 
         ctk.CTkButton(
-            src, text="✨  Use workspace defaults (section-20260502-235344 + enhanced mp33.mp3)",
+            src, text="✨  Use sample defaults (sample_assets/images + sample_assets/audio)",
             command=self._use_defaults,
             fg_color=T["panel2"], hover_color=T["stroke"],
             text_color=T["accent2"], border_width=1, border_color=T["stroke"],
@@ -658,7 +659,7 @@ class VideoCreator:
         self._log("STEP", "Step 4/4 — Joining clips into final video")
         self._set_progress(92, "Joining clips…")
         out_name = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        out_path = WORKSPACE / out_name
+        out_path = ensure_output_dir() / out_name
         ok = self._concat(clips, str(out_path), tmp)
         if not ok or not out_path.exists():
             self._log("ERROR", "Concatenation failed.")
@@ -858,7 +859,7 @@ def run_headless(images_dir, audio_path):
         for c in clips:
             f.write(f"file '{Path(c).as_posix()}'\n")
     out_name = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-    out_path = WORKSPACE / out_name
+    out_path = ensure_output_dir() / out_name
     res = subprocess.run(
         [ffmpeg, "-y", "-loglevel", "error",
          "-f", "concat", "-safe", "0", "-i", str(list_file),
@@ -1013,7 +1014,7 @@ def run_keyword_pipeline(images_dir, audio_path, log=print):
             log(f"  segment {i+1}: {raw_dur/1000:.2f}s -> {len(seg)/1000:.2f}s after silence trim")
 
     out_name = f"video_kw_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-    out_path = WORKSPACE / out_name
+    out_path = ensure_output_dir() / out_name
     log(f"[5/5] Rendering {n_pairs} clips and joining…")
     ok = _render_and_concat(ffmpeg, segments, images[:n_pairs], str(out_path), log=log)
     shutil.rmtree(tmp, ignore_errors=True)
@@ -1127,7 +1128,7 @@ def run_vad_pipeline(images_dir, audio_path, log=print,
             log(f"  segment {i+1}: {len(seg)/1000:.2f}s")
 
     out_name = f"video_vad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-    out_path = WORKSPACE / out_name
+    out_path = ensure_output_dir() / out_name
     log(f"[4/4] Rendering {n_pairs} clips and joining…")
     ok = _render_and_concat(ffmpeg, segments, images[:n_pairs], str(out_path), log=log)
     shutil.rmtree(tmp, ignore_errors=True)

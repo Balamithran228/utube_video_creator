@@ -32,7 +32,8 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "video_toolkit"))
 
 # Wire up ffmpeg so pydub-based loads/saves work, and make Windows
 # stdout UTF-8 so unicode in test names doesn't crash cp1252 printing.

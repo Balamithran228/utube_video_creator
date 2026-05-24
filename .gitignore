@@ -10,6 +10,8 @@ venv/
 env/
 
 # Generated video outputs (regenerate from inputs anytime)
+outputs/*
+!outputs/.gitkeep
 video_tone_*.mp4
 video_vad_*.mp4
 video_kw_*.mp4

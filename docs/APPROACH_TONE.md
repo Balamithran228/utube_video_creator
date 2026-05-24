@@ -1,6 +1,6 @@
 # Approach 2 — 1020 Hz Tone Markers
 
-> **Script:** [`tone_video_creator.py`](tone_video_creator.py)
+> **Script:** `video_toolkit/tone_video_creator.py`
 > **Easiest entry point:** [`launcher.py`](launcher.py) — pick "Create video — Tone markers" and click Continue.
 
 The program splits your audio at every **1020 Hz tone burst** and pairs each resulting segment with a photo. Detection is deterministic — pure FFT, no AI.
@@ -81,7 +81,7 @@ Each Extra is a separate checkbox in the GUI. Untick = the feature is not added.
 
 ### Start Video
 A separate video file (with its own audio) prepended to the final video as an intro. Re-encoded to match the rest of the timeline (1920×1080, H.264, AAC 48 kHz).
-- Auto-picks the first file in `start_video/` if present
+- Auto-picks the first file in `sample_assets/optional/start_video/` if present
 - Doesn't affect segment counting — it's an entirely separate clip at the head
 
 ### Start Image
@@ -90,13 +90,13 @@ A still image used for **segment 1**. When ticked:
 - `panel-001.png` shifts to segment 2
 - `panel-002.png` shifts to segment 3
 - … etc.
-- Auto-picks the first file in `start_image/`
+- Auto-picks the first file in `sample_assets/optional/start_image/`
 
 ### End Image
 A still image used for the **last (trailing) segment**. Useful when your audio has one more segment than you have panels (common in Mode 2 where N tones produce N+1 segments). When ticked:
 - All your `panel-*.png` images keep their normal slots
 - The trailing segment maps to the End Image
-- Auto-picks the first file in `end_image/`
+- Auto-picks the first file in `sample_assets/optional/end_image/`
 
 ### Counting reference
 
@@ -136,7 +136,7 @@ A still image used for the **last (trailing) segment**. Useful when your audio h
 ### GUI (default)
 
 ```bash
-python tone_video_creator.py
+python video_toolkit/tone_video_creator.py
 ```
 
 The window opens; everything is ticking checkboxes and pressing **▶ Convert**.
@@ -145,19 +145,19 @@ The window opens; everything is ticking checkboxes and pressing **▶ Convert**.
 
 ```bash
 # Basic Mode 2 with no extras
-python tone_video_creator.py --audio your.mp3 --mode 2
+python video_toolkit/tone_video_creator.py --audio your.mp3 --mode 2
 
 # Mode 2 with End Image enabled
-python tone_video_creator.py --audio your.mp3 --mode 2 --end-image end_image/disclaimer.jpg
+python video_toolkit/tone_video_creator.py --audio your.mp3 --mode 2 --end-image sample_assets/optional/end_image/disclaimer.jpg
 
 # Quieter source — boost voice 30% and render at 720p
-python tone_video_creator.py --audio your.mp3 --mode 2 --volume-boost 30 --resolution 720p
+python video_toolkit/tone_video_creator.py --audio your.mp3 --mode 2 --volume-boost 30 --resolution 720p
 
 # All extras + both text overlays + boost + 1440p
-python tone_video_creator.py --audio your.mp3 --mode 2 \
-    --start-video start_video/intro.mp4 \
-    --start-image start_image/disclaimer.png \
-    --end-image end_image/outro.jpg \
+python video_toolkit/tone_video_creator.py --audio your.mp3 --mode 2 \
+    --start-video sample_assets/optional/start_video/intro.mp4 \
+    --start-image sample_assets/optional/start_image/disclaimer.png \
+    --end-image sample_assets/optional/end_image/outro.jpg \
     --scroll --side --text "My Channel" \
     --volume-boost 25 --resolution 1440p
 ```
@@ -189,7 +189,7 @@ python tone_video_creator.py --audio your.mp3 --mode 2 \
 Use the diagnostic to see how many tones each threshold finds **without rendering**:
 
 ```bash
-python _tone_probe.py
+python tests/_tone_probe.py
 ```
 
 Look for a **plateau** — a range of thresholds where the count stays the same:

@@ -7,7 +7,7 @@ waveform → export a clean continuous audio file with the cuts removed.
 Launched from `launcher.py` ("Trim & clean a voice recording") or directly:
 
 ```
-python voice_editor.py
+python video_toolkit/voice_editor.py
 ```
 
 ## What it does

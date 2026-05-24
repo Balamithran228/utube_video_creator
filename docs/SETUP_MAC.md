@@ -46,6 +46,7 @@ which ffmpeg     # should print /opt/homebrew/bin/ffmpeg (Apple Silicon) or /usr
 ```bash
 git clone https://github.com/Balamithran228/utube_video_creator.git
 cd utube_video_creator
+git checkout feature/segment-preview-editor
 ```
 
 ---
@@ -88,6 +89,8 @@ python launcher.py
 ```
 
 The launcher window opens. Pick a tool, click Continue.
+
+The app source is in `video_toolkit/`, sample inputs are in `sample_assets/`, and generated videos are written to `outputs/`.
 
 ### Run without activating the venv
 
@@ -188,7 +191,7 @@ Then launch:
 python launcher.py
 ```
 
-Pick **"Convert video/audio → MP3"** for the fastest smoke test — pick any video file you have, click Convert, you should see a `<name>.mp3` appear next to it.
+Pick **"Convert video/audio → MP3"** for the fastest smoke test — pick any video file you have, click Convert, you should see a `<name>.mp3` appear next to it. Creator and merger outputs appear in `outputs/`.
 
 ---
 
@@ -268,7 +271,8 @@ When new commits land in the repo:
 
 ```bash
 cd utube_video_creator
-git pull
+git checkout feature/segment-preview-editor
+git pull origin feature/segment-preview-editor
 
 # uv path:
 source .venv/bin/activate

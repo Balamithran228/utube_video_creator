@@ -24,10 +24,12 @@ except Exception:
     pass
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "video_toolkit"))
 import voice_editor as ve  # noqa: E402
 
 from simple_video_creator import find_ffmpeg, configure_pydub  # noqa: E402
+from paths import OUTPUT_DIR
 
 ffmpeg = find_ffmpeg()
 configure_pydub(ffmpeg)
@@ -52,9 +54,9 @@ def fail(msg):
 
 def main():
     candidates = [
-        HERE / "merged_20260503_141244.mp4",
-        HERE / "video_tone_20260503_134626.mp4",
-        HERE / "video_tone_20260503_140309.mp4",
+        OUTPUT_DIR / "merged_20260503_141244.mp4",
+        OUTPUT_DIR / "video_tone_20260503_134626.mp4",
+        OUTPUT_DIR / "video_tone_20260503_140309.mp4",
     ]
     video = next((c for c in candidates if c.is_file()), None)
     if video is None:

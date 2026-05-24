@@ -19,7 +19,8 @@ except Exception:
     pass
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "video_toolkit"))
 import voice_editor as ve  # noqa: E402  (importing the module — no UI is launched)
 
 

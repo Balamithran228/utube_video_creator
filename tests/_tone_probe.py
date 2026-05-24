@@ -1,14 +1,16 @@
 """Quick diagnostic: scan the new audio for 1020 Hz tone bursts and report
 how many we find at different thresholds. Helps tune the real detector."""
 import os, sys
+from pathlib import Path
 import numpy as np
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "video_toolkit"))
 from simple_video_creator import find_ffmpeg, configure_pydub
+from paths import first_existing_audio
 configure_pydub(find_ffmpeg())
 from pydub import AudioSegment
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-AUDIO = os.path.join(HERE, "mkv2 -enhanced-v2.mp3")
+AUDIO = first_existing_audio()
 
 print(f"Loading {os.path.basename(AUDIO)}…")
 seg = AudioSegment.from_file(AUDIO).set_frame_rate(8000).set_channels(1).set_sample_width(2)
